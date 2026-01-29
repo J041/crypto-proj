@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Login • ACrypt</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header>
+    <h1>ACrypt Secure Share</h1>
+    <div class="row">
+      <label>API Server URL</label>
+      <input id="serverUrl" value="http://127.0.0.1:5000" />
+      <button id="saveServer" type="button">Save</button>
+    </div>
+  </header>
+
+  <main class="grid single">
+    <section class="card">
+      <h2>Login</h2>
+      <p class="muted">This logs you into this browser session (token saved in localStorage).</p>
+
+      <label>Username</label>
+      <input id="logUser" placeholder="alice" />
+
+      <label>Password</label>
+      <input id="logPass" type="password" placeholder="password123" />
+
+      <button id="loginBtn" type="button">Login</button>
+      <div class="muted" id="status"></div>
+    </section>
+
+    <section class="card">
+      <h2>Logs</h2>
+      <pre id="logBox"></pre>
+    </section>
+  </main>
+
+  <script src="/common.js" defer></script>
+  <script src="/navbar.js" defer></script>
+  <script src="/auth.js" defer></script>
+  <script defer>
+    window.addEventListener("DOMContentLoaded", () => {
+      initServerUrlUI();
+
+      if (getToken() && getUsername()) {
+        location.href = "/dashboard";
+        return;
+      }
+
+      document.getElementById("loginBtn").addEventListener("click", async () => {
+        try {
+          setStatus("status", "Logging in…");
+          await loginFlow();
+          setStatus("status", "✅ Login successful. Redirecting…");
+          location.href = "/dashboard";
+        } catch (e) {
+          log(`Login error: ${e.message}`);
+          setStatus("status", `❌ ${e.message}`);
+        }
+      });
+    });
+  </script>
+</body>
+</html>
