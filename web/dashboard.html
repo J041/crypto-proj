@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Dashboard • ACrypt</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header>
+    <h1>ACrypt Secure Share</h1>
+    <div class="row">
+      <label>API Server URL</label>
+      <input id="serverUrl" value="http://127.0.0.1:5000" />
+      <button id="saveServer" type="button">Save</button>
+    </div>
+  </header>
+
+  <main class="grid">
+    <section class="card">
+      <h2>Upload</h2>
+      <label>Pick file</label>
+      <input id="fileInput" type="file" />
+      <button id="uploadBtn" type="button">Encrypt & Upload</button>
+      <div class="muted" id="uploadStatus"></div>
+    </section>
+
+    <section class="card">
+      <h2>My Accessible Files</h2>
+      <div class="row">
+        <button id="refreshBtn" type="button">Refresh List</button>
+      </div>
+      <div class="muted" id="listStatus"></div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>File ID</th>
+            <th>Filename</th>
+            <th>Owner</th>
+            <th>Version</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="filesTbody"></tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>Owner Actions</h2>
+
+      <h3>Grant access</h3>
+      <label>File ID</label>
+      <input id="grantFileId" placeholder="paste file_id" />
+      <label>Recipient username</label>
+      <input id="grantRecipient" placeholder="bob" />
+      <button id="grantBtn" type="button">Grant</button>
+
+      <hr />
+
+      <h3>Revoke access</h3>
+      <label>File ID</label>
+      <input id="revokeFileId" placeholder="paste file_id" />
+      <label>Recipient username</label>
+      <input id="revokeRecipient" placeholder="bob" />
+      <button id="revokeBtn" type="button" class="secondary">Revoke</button>
+
+      <hr />
+
+      <h3>Strong revoke (Rotate key)</h3>
+      <label>File ID</label>
+      <input id="rotateFileId" placeholder="paste file_id" />
+      <label>Allowed users (space-separated, include owner!)</label>
+      <input id="rotateAllowed" placeholder="alice" />
+      <button id="rotateBtn" type="button">Rotate (re-encrypt)</button>
+
+      <hr />
+      <h3>Local Key Maintenance</h3>
+      <button id="resetLocalKeysBtn" type="button" class="secondary">Reset my local keys (this browser)</button>
+      <div class="muted">Use if you forgot your local key password or keys got out of sync. You will need to re-register.</div>
+
+      <div class="muted" id="ownerStatus"></div>
+    </section>
+
+    <section class="card">
+      <h2>Logs</h2>
+      <pre id="logBox"></pre>
+    </section>
+  </main>
+
+    <!-- Password Modal -->
+  <div id="pwModal" class="modal-backdrop" aria-hidden="true">
+    <div class="modal">
+      <h3 id="pwTitle">Enter password</h3>
+      <label>Password</label>
+      <input id="pwInput" type="password" placeholder="••••••••" autocomplete="current-password" />
+      <div class="row" style="margin-top:10px;">
+        <button id="pwCancel" type="button" class="secondary">Cancel</button>
+        <button id="pwOk" type="button">OK</button>
+      </div>
+      <div class="muted">Your password is used locally to unlock your key stored in this browser.</div>
+    </div>
+  </div>
+
+
+  <script src="/common.js" defer></script>
+  <script src="/navbar.js" defer></script>
+  <script src="/modal.js" defer></script>
+  <script src="/dashboard.js" defer></script>
+</body>
+</html>

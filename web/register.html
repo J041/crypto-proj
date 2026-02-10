@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Register • ACrypt</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header>
+    <h1>ACrypt Secure Share</h1>
+    <div class="row">
+      <label>API Server URL</label>
+      <input id="serverUrl" value="http://127.0.0.1:5000" />
+      <button id="saveServer" type="button">Save</button>
+    </div>
+  </header>
+
+  <main class="grid single">
+    <section class="card">
+      <h2>Create an account</h2>
+      <p class="muted">Keys are generated locally and the public key is registered with the server.</p>
+
+      <label>Username</label>
+      <input id="regUser" placeholder="alice" />
+
+      <label>Password</label>
+      <input id="regPass" type="password" placeholder="password123" />
+
+      <button id="registerBtn" type="button">Register</button>
+      <div class="muted" id="status"></div>
+    </section>
+
+    <section class="card">
+      <h2>Logs</h2>
+      <pre id="logBox"></pre>
+    </section>
+  </main>
+
+  <script src="/common.js" defer></script>
+  <script src="/navbar.js" defer></script>
+  <script src="/auth.js" defer></script>
+  <script defer>
+    window.addEventListener("DOMContentLoaded", () => {
+      initServerUrlUI();
+      document.getElementById("registerBtn").addEventListener("click", async () => {
+        try {
+          setStatus("status", "Registering…");
+          await registerFlow();
+          setStatus("status", "✅ Registered successfully. You can now login.");
+        } catch (e) {
+          log(`Register error: ${e.message}`);
+          setStatus("status", `❌ ${e.message}`);
+        }
+      });
+    });
+  </script>
+</body>
+</html>

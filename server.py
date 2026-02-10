@@ -7,10 +7,12 @@ from pathlib import Path
 from typing import Optional
 
 from flask import Flask, request, jsonify, send_file, abort
+from flask_cors import CORS
 
 from crypto_utils import hash_password, verify_password
 
 APP = Flask(__name__)
+CORS(APP)
 
 DATA_DIR = Path("server_data")
 DB_PATH = DATA_DIR / "server.db"
@@ -253,6 +255,27 @@ def download(file_id: str):
         "wrapped_dek_b64": base64.b64encode(k["wrapped_dek"]).decode("ascii"),
     })
 
+@APP.get("/allowed/<file_id>")
+def allowed_users(file_id: str):
+    """Return current allowed users for a file (owner-only).
+
+    Used by the UI to show a proper "<user> access has been revoked" prompt/message
+    before/after a strong revoke (key rotation).
+    """
+    user = require_user()
+    with db() as conn:
+        f = conn.execute("SELECT owner FROM files WHERE file_id=?", (file_id,)).fetchone()
+        if not f:
+            return jsonify({"error": "no such file"}), 404
+        if f["owner"] != user:
+            return jsonify({"error": "only owner can view allowed users"}), 403
+
+        rows = conn.execute(
+            "SELECT username FROM file_keys WHERE file_id=? ORDER BY username ASC",
+            (file_id,)
+        ).fetchall()
+
+    return jsonify({"file_id": file_id, "allowed": [r["username"] for r in rows]})
 
 @APP.post("/grant")
 def grant():
@@ -359,7 +382,53 @@ def rotate():
 
     return jsonify({"ok": True, "version": new_version})
 
+def clear_all_server_state():
+    """
+    DANGEROUS: Deletes ALL users, sessions, files metadata, wrapped keys,
+    and removes all ciphertext blobs from server_data/files.
+    """
+    # Ensure directories exist
+    DATA_DIR.mkdir(exist_ok=True)
+    FILES_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Delete ciphertext blobs
+    deleted_files = 0
+    for p in FILES_DIR.glob("*.bin"):
+        try:
+            p.unlink()
+            deleted_files += 1
+        except Exception:
+            pass
+
+    # Clear database tables (order matters due to foreign keys)
+    with db() as conn:
+        conn.execute("DELETE FROM file_keys")
+        conn.execute("DELETE FROM files")
+        conn.execute("DELETE FROM sessions")
+        conn.execute("DELETE FROM users")
+        conn.commit()
+
+    return deleted_files
 
 if __name__ == "__main__":
+    import sys
+
+    # Always ensure DB exists (tables created)
     init_db()
+
+    # CLI mode: python server.py clear
+    if len(sys.argv) >= 2 and sys.argv[1].lower() == "clear":
+        # Safety prompt to avoid accidental wipes
+        ans = input("This will DELETE ALL server data (DB + ciphertext files). Type CLEAR to confirm: ").strip()
+        if ans != "CLEAR":
+            print("Aborted.")
+            raise SystemExit(1)
+
+        deleted = clear_all_server_state()
+        print(f"✅ Cleared database tables and deleted {deleted} ciphertext file(s) in {FILES_DIR}")
+        raise SystemExit(0)
+
+    # Normal mode: run server
     APP.run(host="127.0.0.1", port=5000, debug=True)
+
+
