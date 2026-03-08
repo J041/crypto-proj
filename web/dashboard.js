@@ -18,6 +18,8 @@ function bind(id, event, handler) {
 }
 
 async function decryptLocalPrivateKey(packed, password) {
+  // packed is the string produced by encryptLocalPrivateKey(): "salt.iv.ciphertext"
+  // where each component is base64-encoded. Split to recover the three parts.
   const [saltB64, ivB64, ctB64] = packed.split(".");
   const salt = new Uint8Array(b64ToBuf(saltB64));
   const iv = new Uint8Array(b64ToBuf(ivB64));
@@ -121,6 +123,77 @@ async function aesGcmDecrypt(ivB64, ctB64, dekBytes) {
   return crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
 }
 
+// -------------------------
+// Signing helpers (ECDSA P-256)
+// -------------------------
+
+/**
+ * Canonical message signed on every ciphertext upload/update/rotate.
+ * Must mirror make_upload_message() in crypto_utils.py (server-side verification
+ * uses Ed25519 for the CLI client; the web client uses ECDSA P-256 — both follow
+ * the same message format so the structure is auditable and consistent).
+ */
+async function makeUploadMessage(fileId, nonceB64, ciphertextB64, version) {
+  const nonce = new Uint8Array(b64ToBuf(nonceB64));
+  const ct = new Uint8Array(b64ToBuf(ciphertextB64));
+  // Compute SHA-256 of ciphertext bytes
+  const ctDigestBuf = await crypto.subtle.digest("SHA-256", ct);
+  // Convert digest bytes to a lowercase hex string: each byte → 2-char hex with leading zero
+  const ctDigest = Array.from(new Uint8Array(ctDigestBuf)).map(b => b.toString(16).padStart(2, "0")).join("");
+  // Likewise convert nonce bytes to hex for the signed message
+  const nonceHex = Array.from(nonce).map(b => b.toString(16).padStart(2, "0")).join("");
+  const msg = `file_id:${fileId}|version:${version}|nonce:${nonceHex}|ciphertext_sha256:${ctDigest}`;
+  return new TextEncoder().encode(msg);
+}
+
+async function loadLocalSignPrivateKey(username, password) {
+  const packed = localStorage.getItem(LS.signPriv(username));
+  if (!packed) throw new Error("No local signing key found. Register on this device first.");
+  const [saltB64, ivB64, ctB64] = packed.split(".");
+  const salt = new Uint8Array(b64ToBuf(saltB64));
+  const iv = new Uint8Array(b64ToBuf(ivB64));
+  const ct = b64ToBuf(ctB64);
+  const enc = new TextEncoder();
+  const baseKey = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveKey"]);
+  const key = await crypto.subtle.deriveKey(
+    { name: "PBKDF2", salt, iterations: 200000, hash: "SHA-256" },
+    baseKey,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["decrypt"]
+  );
+  const pkcs8 = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
+  return crypto.subtle.importKey("pkcs8", pkcs8, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
+}
+
+async function ecdsaSign(msgBytes, signPrivKey) {
+  const sigBuf = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, signPrivKey, msgBytes);
+  return bufToB64(sigBuf);
+}
+
+async function importEcdsaPublicKey(spkiB64) {
+  const raw = b64ToBuf(spkiB64);
+  // The CLI client registers PEM bytes; the web client registers raw DER bytes.
+  // Detect PEM by checking for the ASCII "-----" header and convert if needed.
+  let spkiBytes = raw;
+  try {
+    const asText = new TextDecoder().decode(new Uint8Array(raw));
+    if (asText.includes("BEGIN PUBLIC KEY")) {
+      const b64 = asText
+        .replace(/-----BEGIN PUBLIC KEY-----/g, "")
+        .replace(/-----END PUBLIC KEY-----/g, "")
+        .replace(/\s+/g, "");
+      spkiBytes = b64ToBuf(b64);
+    }
+  } catch (_) {}
+  return crypto.subtle.importKey("spki", spkiBytes, { name: "ECDSA", namedCurve: "P-256" }, true, ["verify"]);
+}
+
+async function ecdsaVerify(msgBytes, sigB64, pubKey) {
+  const sig = b64ToBuf(sigB64);
+  return crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, pubKey, sig, msgBytes);
+}
+
 async function refreshList() {
   setStatus("listStatus", "Loading files…");
   log("Refreshing file list…");
@@ -135,43 +208,57 @@ async function refreshList() {
   }
 
   if (!Array.isArray(files)) {
-    setStatus("listStatus", "Server returned unexpected data (not a list). Check Server URL.");
-    log(`List returned non-array: ${JSON.stringify(files).slice(0, 200)}`);
+    setStatus("listStatus", "Server returned unexpected data. Check Server URL.");
     return;
   }
 
   const tb = document.getElementById("filesTbody");
-  if (!tb) {
-    log("❌ Missing #filesTbody");
-    return;
-  }
+  const empty = document.getElementById("emptyState");
+  if (!tb) return;
+
   tb.innerHTML = "";
 
   if (files.length === 0) {
-    setStatus("listStatus", "No accessible files yet.");
+    setStatus("listStatus", "");
+    if (empty) empty.style.display = "";
     return;
   }
+  if (empty) empty.style.display = "none";
+
+  const me = getUsername();
 
   for (const f of files) {
+    const isOwner = (f.owner === me);
     const tr = document.createElement("tr");
     tr.innerHTML = `
-      <td><code>${f.file_id}</code></td>
-      <td>${f.filename}</td>
-      <td>${f.owner}</td>
-      <td>${f.version}</td>
-      <td class="row">
-        <button type="button" data-id="${f.file_id}" class="dlBtn">Download</button>
+      <td><code title="${f.file_id}">${f.file_id}</code></td>
+      <td>${escHtml(f.filename)}</td>
+      <td>
+        ${escHtml(f.owner)}
+        ${isOwner ? '<span class="badge badge-owner" style="margin-left:6px">You</span>' : '<span class="badge badge-shared" style="margin-left:6px">Shared</span>'}
+      </td>
+      <td>v${f.version}</td>
+      <td class="action-cell">
+        <button type="button" data-id="${f.file_id}" class="dlBtn btn-sm secondary">⬇ Download</button>
+        ${isOwner ? `<button type="button" data-id="${f.file_id}" class="delBtn btn-sm danger">🗑 Delete</button>` : ""}
       </td>
     `;
     tb.appendChild(tr);
   }
 
-  tb.querySelectorAll(".dlBtn").forEach(btn => {
-    btn.addEventListener("click", () => downloadFlow(btn.dataset.id));
-  });
+  tb.querySelectorAll(".dlBtn").forEach(btn =>
+    btn.addEventListener("click", () => downloadFlow(btn.dataset.id))
+  );
+  tb.querySelectorAll(".delBtn").forEach(btn =>
+    btn.addEventListener("click", () => deleteFlow(btn.dataset.id))
+  );
 
   setStatus("listStatus", `Loaded ${files.length} file(s).`);
   log(`Loaded ${files.length} file(s).`);
+}
+
+function escHtml(str) {
+  return String(str).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 }
 
 async function uploadFlow() {
@@ -212,6 +299,25 @@ async function uploadFlow() {
 
   const wrappedForOwner = await rsaWrap(dek, ownerPubKey);
 
+  // Generate a client-side file_id so we can pre-sign before the server assigns one
+  const fileIdBytes = crypto.getRandomValues(new Uint8Array(16));
+  // bufToB64 produces standard base64 which can contain '+', '/', and '=' padding.
+  // Replace them with URL-safe equivalents ('-', '_') and strip padding so the
+  // file_id can be used safely in URL path segments (e.g. GET /download/<file_id>).
+  const fileId = bufToB64(fileIdBytes.buffer).replace(/[+/=]/g, c => ({"+":"-","/":"_","=":""})[c]);
+  const version = 1;
+
+  setStatus("uploadStatus", "Signing…");
+  let signPrivKey;
+  try {
+    signPrivKey = await loadLocalSignPrivateKey(username, password);
+  } catch (e) {
+    setStatus("uploadStatus", `❌ Could not load signing key: ${e.message}`);
+    return;
+  }
+  const msgBytes = await makeUploadMessage(fileId, enc.ivB64, enc.ctB64, version);
+  const sigB64 = await ecdsaSign(msgBytes, signPrivKey);
+
   setStatus("uploadStatus", "Uploading ciphertext…");
 
   let res;
@@ -219,10 +325,12 @@ async function uploadFlow() {
     res = await api("/upload", {
       method: "POST",
       body: JSON.stringify({
+        file_id: fileId,
         filename: file.name,
         nonce_b64: enc.ivB64,
         ciphertext_b64: enc.ctB64,
-        wrapped_dek_b64: wrappedForOwner
+        wrapped_dek_b64: wrappedForOwner,
+        sig_b64: sigB64,
       })
     });
   } catch (e) {
@@ -265,6 +373,28 @@ async function downloadFlow(fileId) {
     return;
   }
 
+  // Verify signature before decrypting — protects against server tampering
+  const sigB64 = j.sig_b64 || "";
+  const signer = j.signer || "";
+  if (sigB64 && signer) {
+    try {
+      const signerPubObj = await api(`/user_pubkeys/${signer}`);
+      const signerSignPubB64 = signerPubObj.sign_pub_pem_b64;
+      const signerSignPub = await importEcdsaPublicKey(signerSignPubB64);
+      const msgBytes = await makeUploadMessage(fileId, j.nonce_b64, j.ciphertext_b64, j.version);
+      const valid = await ecdsaVerify(msgBytes, sigB64, signerSignPub);
+      if (!valid) {
+        alert(`⚠️ Signature verification FAILED for file ${fileId} (signer: ${signer}).\nThe ciphertext may have been tampered with. Aborting download.`);
+        log(`❌ Signature invalid for ${fileId} — download aborted`);
+        return;
+      }
+      log(`✅ Signature verified: ciphertext signed by ${signer} at version ${j.version}`);
+    } catch (e) {
+      log(`⚠️ Signature check error: ${e.message} — proceeding without verification`);
+    }
+  } else {
+    log(`⚠️ No signature present for ${fileId} — skipping verification`);
+  }
 
   let dek;
   try {
@@ -284,7 +414,9 @@ async function downloadFlow(fileId) {
     return;
   }
 
-
+  // Trigger a browser file-save dialog: create an object URL from the decrypted
+  // bytes, attach it to a temporary <a> element, click it programmatically, then
+  // immediately remove the element and revoke the URL to free memory.
   const blob = new Blob([pt], { type: "application/octet-stream" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
@@ -385,6 +517,9 @@ async function grantFlow() {
 }
 
 async function revokeFlow() {
+  // Optional chaining (?.) is used throughout: if a UI element is missing (e.g.
+  // the page was loaded without the full dashboard HTML), the value falls back to
+  // "" gracefully rather than throwing a TypeError.
   const fileId = (document.getElementById("revokeFileId")?.value || "").trim();
   const recipient = (document.getElementById("revokeRecipient")?.value || "").trim();
   if (!fileId || !recipient) {
@@ -401,19 +536,127 @@ async function revokeFlow() {
   log(`Revoked access: ${recipient} -> ${fileId}`);
 }
 
+async function modifyFlow() {
+  const username = getUsername();
+  const password = await askPassword("Enter your password to modify this file:");
+  if (!password) {
+    setStatus("modifyStatus", "Modification cancelled (password required).");
+    return;
+  }
+
+  const fileId = (document.getElementById("modifyFileId")?.value || "").trim();
+  const fileEl = document.getElementById("modifyFileInput");
+  if (!fileId) {
+    setStatus("modifyStatus", "Enter a file ID.");
+    return;
+  }
+  if (!fileEl || !fileEl.files || fileEl.files.length === 0) {
+    setStatus("modifyStatus", "Choose a modified file first.");
+    return;
+  }
+
+  setStatus("modifyStatus", "Loading your private keys…");
+  let priv, signPrivKey;
+  try {
+    priv = await loadLocalPrivateKey(username, password);
+    signPrivKey = await loadLocalSignPrivateKey(username, password);
+  } catch (e) {
+    setStatus("modifyStatus", `❌ ${e.message}`);
+    return;
+  }
+
+  // Download the current wrapped DEK for this user and current version
+  setStatus("modifyStatus", "Fetching current file key…");
+  let j;
+  try {
+    j = await api(`/download/${fileId}`);
+  } catch (e) {
+    setStatus("modifyStatus", `❌ Could not fetch file: ${e.message}`);
+    return;
+  }
+
+  let dek;
+  try {
+    dek = await rsaUnwrap(j.wrapped_dek_b64, priv);
+  } catch (e) {
+    setStatus("modifyStatus", `❌ Could not unwrap file key: ${e.message}`);
+    return;
+  }
+
+  const newVersion = j.version + 1;
+
+  // Encrypt the new plaintext with the same DEK
+  setStatus("modifyStatus", "Encrypting modified file…");
+  const plaintext = await fileEl.files[0].arrayBuffer();
+  const enc = await aesGcmEncrypt(plaintext, dek);
+
+  // Sign
+  const msgBytes = await makeUploadMessage(fileId, enc.ivB64, enc.ctB64, newVersion);
+  const sigB64 = await ecdsaSign(msgBytes, signPrivKey);
+
+  setStatus("modifyStatus", "Uploading…");
+  let res;
+  try {
+    res = await api("/update", {
+      method: "POST",
+      body: JSON.stringify({
+        file_id: fileId,
+        nonce_b64: enc.ivB64,
+        ciphertext_b64: enc.ctB64,
+        sig_b64: sigB64,
+      })
+    });
+  } catch (e) {
+    setStatus("modifyStatus", `❌ Update failed: ${e.message}`);
+    return;
+  }
+
+  setStatus("modifyStatus", `✅ File updated (new version=${res.version})`);
+  log(`Modified ${fileId} -> version ${res.version}`);
+  await refreshList();
+}
+
+
 async function rotateFlow() {
   const username = getUsername();
   const password = await askPassword("Enter your password to decrypt & re-encrypt:");
   if (!password) return;
 
-  const fileId = (document.getElementById("rotateFileId")?.value || "").trim();
+  // rotateFileId shares the revokeFileId input in the redesigned layout
+  const fileId = (document.getElementById("rotateFileId")?.value ||
+                  document.getElementById("revokeFileId")?.value || "").trim();
   const allowed = (document.getElementById("rotateAllowed")?.value || "").trim();
   if (!fileId || !allowed) {
     setStatus("ownerStatus", "Enter file_id + allowed users.");
     return;
   }
 
+  // Split on any whitespace (spaces, tabs, newlines) so users can paste a
+  // space- or newline-separated list. filter(Boolean) removes empty tokens.
   const allowedUsers = allowed.split(/\s+/).filter(Boolean);
+
+  // Fetch the current allowed users BEFORE rotation to compute who will be revoked
+  let oldAllowed = [];
+  try {
+    const a = await api(`/allowed/${fileId}`);
+    oldAllowed = Array.isArray(a.allowed) ? a.allowed : [];
+  } catch (e) {
+    setStatus("ownerStatus", `❌ Could not fetch current allowed users: ${e.message}`);
+    return;
+  }
+
+  const revokedUsers = oldAllowed.filter((u) => !allowedUsers.includes(u));
+
+  // Confirm BEFORE doing anything irreversible
+  if (revokedUsers.length > 0) {
+    const ok = confirm(
+      `You are about to revoke access for: ${revokedUsers.join(", ")}.\n\n` +
+      "They will no longer be able to decrypt or download this file after rotation.\n\n" +
+      "Continue?"
+    );
+    if (!ok) return;
+  }
+
   const priv = await loadLocalPrivateKey(username, password);
 
   const j = await api(`/download/${fileId}`);
@@ -430,8 +673,16 @@ async function rotateFlow() {
     wrapped_map[u] = await rsaWrap(newDek, pub);
   }
 
-  const a = await api(`/allowed/${fileId}`);
-  oldAllowed = Array.isArray(a.allowed) ? a.allowed : [];
+  const newVersion = j.version + 1;
+  let signPrivKey;
+  try {
+    signPrivKey = await loadLocalSignPrivateKey(username, password);
+  } catch (e) {
+    setStatus("ownerStatus", `❌ Could not load signing key: ${e.message}`);
+    return;
+  }
+  const msgBytes = await makeUploadMessage(fileId, enc.ivB64, enc.ctB64, newVersion);
+  const sigB64 = await ecdsaSign(msgBytes, signPrivKey);
 
   const rr = await api("/rotate", {
     method: "POST",
@@ -439,24 +690,14 @@ async function rotateFlow() {
       file_id: fileId,
       nonce_b64: enc.ivB64,
       ciphertext_b64: enc.ctB64,
+      sig_b64: sigB64,
       wrapped_map
     })
   });
 
-  const revokedUsers = oldAllowed.filter((u) => !allowedUsers.includes(u));
-  if (revokedUsers.length > 0) {
-    const ok = confirm(
-      `You are about to revoke access for: ${revokedUsers.join(", ")}.\n\n` +
-      "They will no longer be able to decrypt or download this file after rotation.\n\n" +
-      "Continue?"
-    );
-    if (!ok) return;
-  }
-
   if (revokedUsers.length > 0) {
     setStatus("ownerStatus", `✅ Access revoked for ${revokedUsers.join(", ")}. Rotated key. New version=${rr.version}`);
-  } 
-  else {
+  } else {
     setStatus("ownerStatus", `✅ Rotated key. New version=${rr.version}`);
   }
 
@@ -473,11 +714,45 @@ function resetLocalKeysFlow() {
 
   localStorage.removeItem(LS.rsaPub(u));
   localStorage.removeItem(LS.rsaPriv(u));
+  localStorage.removeItem(LS.signPub(u));
+  localStorage.removeItem(LS.signPriv(u));
 
   log(`✅ Local keys cleared for ${u} on this browser.`);
   alert("Local keys cleared. Now go to Register and create the account again (or register with the same username after server clear).");
 }
 
+
+async function deleteFlow(fileId) {
+  // fileId can be passed directly (from table button) or read from the input field
+  const id = fileId || (document.getElementById("deleteFileId")?.value || "").trim();
+  if (!id) {
+    setStatus("ownerStatus", "❌ Enter a File ID to delete.");
+    return;
+  }
+
+  const confirmed = await askConfirm(
+    "Permanently delete file?",
+    `File ID: ${id}\n\nThis will remove the encrypted file from the server for all users. This action cannot be undone.`,
+    "Delete permanently",
+    true
+  );
+  if (!confirmed) return;
+
+  setStatus("ownerStatus", "Deleting…");
+  log(`Deleting file ${id}…`);
+
+  try {
+    await api(`/delete/${id}`, { method: "DELETE" });
+    setStatus("ownerStatus", `✅ File ${id} deleted.`);
+    log(`✅ Deleted file ${id}`);
+    const inp = document.getElementById("deleteFileId");
+    if (inp) inp.value = "";
+    await refreshList();
+  } catch (e) {
+    setStatus("ownerStatus", `❌ Delete failed: ${e.message}`);
+    log(`❌ Delete error: ${e.message}`);
+  }
+}
 
 window.addEventListener("DOMContentLoaded", async () => {
   if (!requireAuthOrRedirect()) return;
@@ -489,19 +764,30 @@ window.addEventListener("DOMContentLoaded", async () => {
   log(`Username: ${getUsername() || "(none)"}`);
 
   // Bind buttons safely (won't crash even if IDs mismatch)
-  bind("refreshBtn", "click", () => refreshList());
-  bind("uploadBtn", "click", () => {
-    log("Upload button clicked");
-    uploadFlow();
-  });
-  bind("grantBtn", "click", () => grantFlow());
-  bind("revokeBtn", "click", () => revokeFlow());
-  bind("rotateBtn", "click", () => rotateFlow());
+  bind("modifyBtn",         "click", () => modifyFlow());
+  bind("refreshBtn",        "click", () => refreshList());
+  bind("uploadBtn",         "click", () => { log("Upload button clicked"); uploadFlow(); });
+  bind("grantBtn",          "click", () => grantFlow());
+  bind("revokeBtn",         "click", () => revokeFlow());
+  bind("rotateBtn",         "click", () => rotateFlow());
+  bind("deleteBtn",         "click", () => deleteFlow());
+  // Logout is handled by #navLogout injected by navbar.js;
+  // bind() here covers any page that still has a static #logoutBtn.
   bind("logoutBtn", "click", () => {
     localStorage.removeItem(LS.token);
     localStorage.removeItem(LS.username);
     location.href = "/login";
   });
+  // Also wire the navbar logout button if present (rendered after DOMContentLoaded by navbar.js)
+  const navLogout = document.getElementById("navLogout");
+  if (navLogout) {
+    navLogout.addEventListener("click", (e) => {
+      e.preventDefault();
+      localStorage.removeItem(LS.token);
+      localStorage.removeItem(LS.username);
+      location.href = "/login";
+    });
+  }
   bind("resetLocalKeysBtn", "click", () => resetLocalKeysFlow());
 
   await refreshList();

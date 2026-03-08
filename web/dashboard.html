@@ -7,101 +7,199 @@
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
+
+  <!-- ===== HEADER ===== -->
   <header>
-    <h1>ACrypt Secure Share</h1>
-    <div class="row">
-      <label>API Server URL</label>
+    <div class="header-brand">
+      <div class="logo">🔐</div>
+      <h1>ACrypt</h1>
+    </div>
+    <div class="header-server">
+      <label style="margin:0;font-size:11px;">API:</label>
       <input id="serverUrl" value="http://127.0.0.1:5000" />
-      <button id="saveServer" type="button">Save</button>
+      <button id="saveServer" type="button" class="secondary btn-sm" style="margin:0">Save</button>
     </div>
   </header>
 
-  <main class="grid">
-    <section class="card">
-      <h2>Upload</h2>
-      <label>Pick file</label>
-      <input id="fileInput" type="file" />
-      <button id="uploadBtn" type="button">Encrypt & Upload</button>
-      <div class="muted" id="uploadStatus"></div>
-    </section>
+  <!-- ===== MAIN ===== -->
+  <div class="page-wrap">
+    <div class="dashboard-grid">
 
-    <section class="card">
-      <h2>My Accessible Files</h2>
-      <div class="row">
-        <button id="refreshBtn" type="button">Refresh List</button>
+      <!-- Upload card -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-icon blue">⬆️</div>
+          <div>
+            <div class="card-title">Upload File</div>
+            <div class="card-subtitle">Encrypt locally, then send to server</div>
+          </div>
+        </div>
+        <div class="field">
+          <label>Select file</label>
+          <input id="fileInput" type="file" />
+        </div>
+        <button id="uploadBtn" type="button">⬆ Encrypt &amp; Upload</button>
+        <div class="muted" id="uploadStatus"></div>
       </div>
-      <div class="muted" id="listStatus"></div>
 
-      <table>
-        <thead>
-          <tr>
-            <th>File ID</th>
-            <th>Filename</th>
-            <th>Owner</th>
-            <th>Version</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody id="filesTbody"></tbody>
-      </table>
-    </section>
-
-    <section class="card">
-      <h2>Owner Actions</h2>
-
-      <h3>Grant access</h3>
-      <label>File ID</label>
-      <input id="grantFileId" placeholder="paste file_id" />
-      <label>Recipient username</label>
-      <input id="grantRecipient" placeholder="bob" />
-      <button id="grantBtn" type="button">Grant</button>
-
-      <hr />
-
-      <h3>Revoke access</h3>
-      <label>File ID</label>
-      <input id="revokeFileId" placeholder="paste file_id" />
-      <label>Recipient username</label>
-      <input id="revokeRecipient" placeholder="bob" />
-      <button id="revokeBtn" type="button" class="secondary">Revoke</button>
-
-      <hr />
-
-      <h3>Strong revoke (Rotate key)</h3>
-      <label>File ID</label>
-      <input id="rotateFileId" placeholder="paste file_id" />
-      <label>Allowed users (space-separated, include owner!)</label>
-      <input id="rotateAllowed" placeholder="alice" />
-      <button id="rotateBtn" type="button">Rotate (re-encrypt)</button>
-
-      <hr />
-      <h3>Local Key Maintenance</h3>
-      <button id="resetLocalKeysBtn" type="button" class="secondary">Reset my local keys (this browser)</button>
-      <div class="muted">Use if you forgot your local key password or keys got out of sync. You will need to re-register.</div>
-
-      <div class="muted" id="ownerStatus"></div>
-    </section>
-
-    <section class="card">
-      <h2>Logs</h2>
-      <pre id="logBox"></pre>
-    </section>
-  </main>
-
-    <!-- Password Modal -->
-  <div id="pwModal" class="modal-backdrop" aria-hidden="true">
-    <div class="modal">
-      <h3 id="pwTitle">Enter password</h3>
-      <label>Password</label>
-      <input id="pwInput" type="password" placeholder="••••••••" autocomplete="current-password" />
-      <div class="row" style="margin-top:10px;">
-        <button id="pwCancel" type="button" class="secondary">Cancel</button>
-        <button id="pwOk" type="button">OK</button>
+      <!-- Modify card -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-icon orange">✏️</div>
+          <div>
+            <div class="card-title">Modify File</div>
+            <div class="card-subtitle">Re-encrypt with the same DEK — all authorized users retain access</div>
+          </div>
+        </div>
+        <div class="field">
+          <label>File ID</label>
+          <input id="modifyFileId" placeholder="paste file_id here" />
+        </div>
+        <div class="field">
+          <label>Replacement file</label>
+          <input id="modifyFileInput" type="file" />
+        </div>
+        <button id="modifyBtn" type="button" class="secondary">✏ Encrypt &amp; Update</button>
+        <div class="muted" id="modifyStatus"></div>
       </div>
-      <div class="muted">Your password is used locally to unlock your key stored in this browser.</div>
+
+      <!-- Files table — spans full width -->
+      <div class="card span-2">
+        <div class="card-header">
+          <div class="card-icon green">📁</div>
+          <div>
+            <div class="card-title">My Accessible Files</div>
+            <div class="card-subtitle">Files you own or have been granted access to</div>
+          </div>
+          <button id="refreshBtn" type="button" class="secondary btn-sm" style="margin:0 0 0 auto">↻ Refresh</button>
+        </div>
+        <div class="muted" id="listStatus"></div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>File ID</th>
+                <th>Filename</th>
+                <th>Owner</th>
+                <th>Version</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="filesTbody"></tbody>
+          </table>
+          <div id="emptyState" class="empty-state" style="display:none">
+            <div class="empty-icon">📭</div>
+            <p>No files yet. Upload your first file above.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Owner Actions card -->
+      <div class="card span-2">
+        <div class="card-header">
+          <div class="card-icon purple">🛡</div>
+          <div>
+            <div class="card-title">Owner Actions</div>
+            <div class="card-subtitle">Grant, revoke, rotate keys, or permanently delete files you own</div>
+          </div>
+        </div>
+
+        <div class="dashboard-grid" style="gap:14px">
+
+          <!-- Grant -->
+          <div>
+            <h3>Grant Access</h3>
+            <div class="field">
+              <label>File ID</label>
+              <input id="grantFileId" placeholder="paste file_id" />
+            </div>
+            <div class="field">
+              <label>Recipient username</label>
+              <input id="grantRecipient" placeholder="bob" />
+            </div>
+            <button id="grantBtn" type="button" class="success btn-sm">✔ Grant Access</button>
+          </div>
+
+          <!-- Revoke -->
+          <div>
+            <h3>Revoke Access</h3>
+            <div class="field">
+              <label>File ID</label>
+              <input id="revokeFileId" placeholder="paste file_id" />
+            </div>
+            <div class="field">
+              <label>Recipient username</label>
+              <input id="revokeRecipient" placeholder="bob" />
+            </div>
+            <div class="btn-row" style="margin-top:0">
+              <button id="revokeBtn" type="button" class="secondary btn-sm">✖ Soft Revoke</button>
+              <button id="rotateBtn" type="button" class="danger btn-sm" style="flex:1">🔄 Strong Revoke (Rotate Key)</button>
+            </div>
+            <div class="field" style="margin-top:10px">
+              <label>Kept users after rotation (space-separated, include yourself!)</label>
+              <input id="rotateAllowed" placeholder="alice" />
+            </div>
+          </div>
+        </div>
+
+        <div class="muted" id="ownerStatus"></div>
+        <hr class="divider" />
+
+      <!-- Key maintenance -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-icon red">🔑</div>
+          <div>
+            <div class="card-title">Local Key Maintenance</div>
+            <div class="card-subtitle">Manage keys stored in this browser</div>
+          </div>
+        </div>
+        <p>Use if you forgot your local key password or keys got out of sync. You will need to re-register after resetting.</p>
+        <button id="resetLocalKeysBtn" type="button" class="secondary">Reset my local keys (this browser)</button>
+      </div>
+
+      <!-- Logs -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-icon blue">📋</div>
+          <div>
+            <div class="card-title">Activity Log</div>
+            <div class="card-subtitle">Real-time operation log for this session</div>
+          </div>
+        </div>
+        <pre id="logBox"></pre>
+      </div>
+
     </div>
   </div>
 
+  <!-- Password Modal -->
+  <div id="pwModal" class="modal-backdrop" aria-hidden="true">
+    <div class="modal">
+      <h3 id="pwTitle">Enter password</h3>
+      <div class="field">
+        <label>Password</label>
+        <input id="pwInput" type="password" placeholder="••••••••" autocomplete="current-password" />
+      </div>
+      <p style="margin-top:0">Your password unlocks your key stored locally in this browser.</p>
+      <div class="modal-actions">
+        <button id="pwCancel" type="button" class="secondary">Cancel</button>
+        <button id="pwOk" type="button">Unlock</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Confirm Modal (for destructive actions) -->
+  <div id="confirmModal" class="modal-backdrop" aria-hidden="true">
+    <div class="modal">
+      <h3 id="confirmTitle">Are you sure?</h3>
+      <p id="confirmMessage"></p>
+      <div class="modal-actions">
+        <button id="confirmCancel" type="button" class="secondary">Cancel</button>
+        <button id="confirmOk" type="button" class="danger">Confirm</button>
+      </div>
+    </div>
+  </div>
 
   <script src="/common.js" defer></script>
   <script src="/navbar.js" defer></script>
