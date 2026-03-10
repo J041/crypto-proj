@@ -201,3 +201,6 @@ server_data/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# custom
+server_data/

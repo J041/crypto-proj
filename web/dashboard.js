@@ -363,12 +363,6 @@ async function downloadFlow(fileId) {
   try {
     j = await api(`/download/${fileId}`);
   } catch (e) {
-    if ((e.message || "").toLowerCase().includes("no access")) {
-      alert("You no longer have access to this file. The owner may have rotated the encryption keys.");
-      log(`❌ Download blocked: no access (possibly revoked) for file ${fileId}`);
-      return;
-    }
-    alert(`Download failed: ${e.message}`);
     log(`Download API error: ${e.message}`);
     return;
   }
