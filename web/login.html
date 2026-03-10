@@ -52,11 +52,11 @@
         try {
           setStatus("status", "Signing in…");
           await loginFlow();
-          setStatus("status", "✅ Success! Redirecting…");
+          setStatus("status", "Successful, redirecting…");
           location.href = "/dashboard";
         } catch (e) {
           log(`Login error: ${e.message}`);
-          setStatus("status", `❌ ${e.message}`);
+          setStatus("status", `${e.message}`);
         }
       });
       document.getElementById("logPass").addEventListener("keydown", e => {

@@ -52,10 +52,10 @@
         try {
           setStatus("status", "Generating keys & registering…");
           await registerFlow();
-          setStatus("status", "✅ Registered! You can now sign in.");
+          setStatus("status", "Registered! You can now sign in.");
         } catch (e) {
           log(`Register error: ${e.message}`);
-          setStatus("status", `❌ ${e.message}`);
+          setStatus("status", `${e.message}`);
         }
       });
     });

@@ -240,6 +240,16 @@ async function refreshList() {
       ? `${escHtml(lastMod)} <span class="badge badge-shared" style="margin-left:4px" title="Different from owner">✏ modified</span>`
       : escHtml(lastMod);
 
+    // Build authorized-users cell: one badge per non-owner user with access.
+    // Shows "—" when only the owner has access, or the current user is not the owner
+    // and the server omitted the list (graceful degradation).
+    const authUsers = Array.isArray(f.authorized_users) ? f.authorized_users : [];
+    const authCell = authUsers.length
+      ? authUsers.map(u =>
+          `<span class="badge badge-shared" style="margin:1px 3px 1px 0">${escHtml(u)}</span>`
+        ).join("")
+      : `<span style="color:var(--text-muted);font-size:12px">—</span>`;
+
     tr.innerHTML = `
       <td><code title="${f.file_id}">${f.file_id}</code></td>
       <td>${escHtml(f.filename)}</td>
@@ -247,6 +257,7 @@ async function refreshList() {
         ${escHtml(f.owner)}
         ${isOwner ? '<span class="badge badge-owner" style="margin-left:6px">You</span>' : '<span class="badge badge-shared" style="margin-left:6px">Shared</span>'}
       </td>
+      <td>${authCell}</td>
       <td>v${f.version}</td>
       <td>${modCell}</td>
       <td class="action-cell">
@@ -474,6 +485,8 @@ async function downloadFlow(fileId) {
 
 
 async function grantFlow() {
+  // Clear any stale access-list panel from a previous revoke
+  const _al = document.getElementById('accessList'); if (_al) _al.innerHTML = '';
   const owner = getUsername();
   const password = await askPassword("Enter your password to grant access:");
   if (!password) return;
@@ -571,13 +584,94 @@ async function revokeFlow() {
     return;
   }
 
-  await api("/revoke", {
-    method: "POST",
-    body: JSON.stringify({ file_id: fileId, recipient })
-  });
+  // Fetch current access list so the confirm prompt shows who currently has access.
+  let currentUsers = [];
+  try {
+    const a = await api(`/allowed/${fileId}`);
+    currentUsers = Array.isArray(a.allowed) ? a.allowed : [];
+  } catch (e) {
+    // Non-fatal — proceed without showing the current list
+  }
 
-  setStatus("ownerStatus", `✅ Revoked ${recipient} access to ${fileId}. Rotate for strong revoke.`);
+  const otherUsers = currentUsers.filter(u => u !== recipient);
+  const currentListText = currentUsers.length
+    ? `Currently has access: ${currentUsers.join(", ")}.`
+    : "";
+
+  const confirmed = await askConfirm(
+    `Revoke access for ${recipient}?`,
+    `${currentListText}
+
+This will remove ${recipient}'s access to this file. They will no longer be able to download or modify it.
+
+Note: for strong revocation (preventing use of a previously-downloaded key) use Rotate Key instead.`,
+    "Revoke",
+    true
+  );
+  if (!confirmed) {
+    setStatus("ownerStatus", "Revoke cancelled.");
+    return;
+  }
+
+  try {
+    await api("/revoke", {
+      method: "POST",
+      body: JSON.stringify({ file_id: fileId, recipient })
+    });
+  } catch (e) {
+    setStatus("ownerStatus", `❌ Revoke failed: ${e.message}`);
+    return;
+  }
+
   log(`Revoked access: ${recipient} -> ${fileId}`);
+
+  // Fetch the updated access list and show it inline.
+  let updatedUsers = [];
+  try {
+    const a = await api(`/allowed/${fileId}`);
+    updatedUsers = Array.isArray(a.allowed) ? a.allowed : [];
+  } catch (e) {
+    // Non-fatal
+  }
+
+  setStatus("ownerStatus", `✅ ${recipient}'s access has been revoked.`);
+  showAccessList(fileId, updatedUsers, recipient);
+}
+
+/**
+ * Render a tidy "Users with access" panel inside #accessList.
+ *
+ * @param {string}   fileId       - the affected file
+ * @param {string[]} users        - current allowed users after the action
+ * @param {string}   revokedUser  - the user who was just revoked (shown with strikethrough)
+ */
+function showAccessList(fileId, users, revokedUser) {
+  const el = document.getElementById("accessList");
+  if (!el) return;
+
+  const me = getUsername();
+
+  const badges = users.map(u => {
+    const cls = u === me ? "badge-owner" : "badge-shared";
+    return `<span class="badge ${cls}" style="margin:2px 4px 2px 0">${escHtml(u)}</span>`;
+  }).join("");
+
+  const revokedBadge = `<span class="badge" style="margin:2px 4px 2px 0;opacity:0.5;text-decoration:line-through">${escHtml(revokedUser)}</span>`;
+
+  el.innerHTML = `
+    <div style="margin-top:10px;padding:12px 14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">
+      <div style="font-size:12px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">
+        Users with access to <code style="font-size:11px">${escHtml(fileId)}</code>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;align-items:center;gap:2px">
+        ${revokedBadge}
+        ${badges || '<span style="color:var(--text-muted);font-size:13px">No users remaining</span>'}
+      </div>
+      ${users.length === 0
+        ? '<p style="margin:8px 0 0;font-size:12px;color:var(--text-muted)">⚠ No one (not even you) has a key for this file. Consider deleting it or rotating to restore your own access.</p>'
+        : ''}
+    </div>
+  `;
 }
 
 async function modifyFlow() {
@@ -662,6 +756,8 @@ async function modifyFlow() {
 
 
 async function rotateFlow() {
+  // Clear any stale access-list panel from a previous revoke
+  const _al = document.getElementById('accessList'); if (_al) _al.innerHTML = '';
   const username = getUsername();
   const password = await askPassword("Enter your password to decrypt & re-encrypt:");
   if (!password) return;

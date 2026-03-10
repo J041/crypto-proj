@@ -256,7 +256,29 @@ def list_files():
             ORDER BY f.created_at DESC
         """, (user,)).fetchall()
 
-    return jsonify([dict(r) for r in rows])
+        # For each file, collect all authorised users (everyone with a file_keys row).
+        # Using GROUP_CONCAT in a subquery keeps this to a single round trip.
+        auth_map = {}
+        if rows:
+            ids = [r["file_id"] for r in rows]
+            placeholders = ",".join("?" * len(ids))
+            auth_rows = conn.execute(f"""
+                SELECT file_id, GROUP_CONCAT(username, ',') AS users
+                FROM file_keys
+                WHERE file_id IN ({placeholders})
+                GROUP BY file_id
+            """, ids).fetchall()
+            auth_map = {r["file_id"]: r["users"].split(",") if r["users"] else []
+                        for r in auth_rows}
+
+    result = []
+    for r in rows:
+        d = dict(r)
+        all_users = auth_map.get(d["file_id"], [])
+        # authorized_users = everyone except the owner
+        d["authorized_users"] = [u for u in all_users if u != d["owner"]]
+        result.append(d)
+    return jsonify(result)
 
 
 @APP.get("/download/<file_id>")
@@ -579,7 +601,7 @@ if __name__ == "__main__":
             raise SystemExit(1)
 
         deleted = clear_all_server_state()
-        print(f"✅ Cleared database tables and deleted {deleted} ciphertext file(s) in {FILES_DIR}")
+        print(f"Cleared database tables and deleted {deleted} ciphertext file(s) in {FILES_DIR}")
         raise SystemExit(0)
 
     # Normal mode: run server
