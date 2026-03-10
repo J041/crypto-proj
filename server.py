@@ -255,6 +255,27 @@ def download(file_id: str):
         "wrapped_dek_b64": base64.b64encode(k["wrapped_dek"]).decode("ascii"),
     })
 
+@APP.get("/allowed/<file_id>")
+def allowed_users(file_id: str):
+    """Return current allowed users for a file (owner-only).
+
+    Used by the UI to show a proper "<user> access has been revoked" prompt/message
+    before/after a strong revoke (key rotation).
+    """
+    user = require_user()
+    with db() as conn:
+        f = conn.execute("SELECT owner FROM files WHERE file_id=?", (file_id,)).fetchone()
+        if not f:
+            return jsonify({"error": "no such file"}), 404
+        if f["owner"] != user:
+            return jsonify({"error": "only owner can view allowed users"}), 403
+
+        rows = conn.execute(
+            "SELECT username FROM file_keys WHERE file_id=? ORDER BY username ASC",
+            (file_id,)
+        ).fetchall()
+
+    return jsonify({"file_id": file_id, "allowed": [r["username"] for r in rows]})
 
 @APP.post("/grant")
 def grant():
