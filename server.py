@@ -248,7 +248,8 @@ def list_files():
         # is automatically scoped to only files this user has a wrapped DEK for
         # (i.e. files they are authorised to access).
         rows = conn.execute("""
-            SELECT f.file_id, f.owner, f.filename, f.version, f.created_at
+            SELECT f.file_id, f.owner, f.filename, f.version, f.created_at,
+                   f.signer AS last_modified_by
             FROM files f
             JOIN file_keys k ON k.file_id = f.file_id
             WHERE k.username=?

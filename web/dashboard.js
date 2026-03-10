@@ -219,6 +219,7 @@ async function refreshList() {
   tb.innerHTML = "";
 
   if (files.length === 0) {
+    populateFileSelects([]);
     setStatus("listStatus", "");
     if (empty) empty.style.display = "";
     return;
@@ -230,6 +231,15 @@ async function refreshList() {
   for (const f of files) {
     const isOwner = (f.owner === me);
     const tr = document.createElement("tr");
+    // last_modified_by is the signer of the most recent upload/update/rotate.
+    // It equals the owner on initial upload, and changes when any authorised
+    // user calls modify (update) or the owner calls rotate.
+    const lastMod = f.last_modified_by || f.owner;
+    const modifiedByOther = (lastMod !== f.owner);
+    const modCell = modifiedByOther
+      ? `${escHtml(lastMod)} <span class="badge badge-shared" style="margin-left:4px" title="Different from owner">✏ modified</span>`
+      : escHtml(lastMod);
+
     tr.innerHTML = `
       <td><code title="${f.file_id}">${f.file_id}</code></td>
       <td>${escHtml(f.filename)}</td>
@@ -238,6 +248,7 @@ async function refreshList() {
         ${isOwner ? '<span class="badge badge-owner" style="margin-left:6px">You</span>' : '<span class="badge badge-shared" style="margin-left:6px">Shared</span>'}
       </td>
       <td>v${f.version}</td>
+      <td>${modCell}</td>
       <td class="action-cell">
         <button type="button" data-id="${f.file_id}" class="dlBtn btn-sm secondary">⬇ Download</button>
         ${isOwner ? `<button type="button" data-id="${f.file_id}" class="delBtn btn-sm danger">🗑 Delete</button>` : ""}
@@ -253,12 +264,45 @@ async function refreshList() {
     btn.addEventListener("click", () => deleteFlow(btn.dataset.id))
   );
 
+  populateFileSelects(files);
+
   setStatus("listStatus", `Loaded ${files.length} file(s).`);
   log(`Loaded ${files.length} file(s).`);
 }
 
 function escHtml(str) {
   return String(str).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+
+// Populate all file-id <select> dropdowns with the current accessible file list.
+// Called after refreshList() fetches the file list from the server.
+// Each option shows "filename (file_id)" so users can identify files without
+// memorising opaque IDs. The selects stay in sync every time the list refreshes.
+function populateFileSelects(files) {
+  const me = getUsername();
+  const selects = {
+    modifyFileId: files,               // any accessible file can be modified
+    grantFileId:  files.filter(f => f.owner === me),  // only owner can grant
+    revokeFileId: files.filter(f => f.owner === me),  // only owner can revoke/rotate
+  };
+
+  for (const [id, list] of Object.entries(selects)) {
+    const sel = document.getElementById(id);
+    if (!sel) continue;
+
+    // Preserve current selection so a refresh doesn't lose the user's choice
+    const prev = sel.value;
+
+    sel.innerHTML = `<option value="">— select a file —</option>` +
+      list.map(f =>
+        `<option value="${escHtml(f.file_id)}">${escHtml(f.filename)} (${escHtml(f.file_id)})</option>`
+      ).join("");
+
+    // Restore previous selection if it still exists in the new list
+    if (prev && [...sel.options].some(o => o.value === prev)) {
+      sel.value = prev;
+    }
+  }
 }
 
 async function uploadFlow() {
