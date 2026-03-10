@@ -4,6 +4,8 @@ const LS = {
   username: "acrypt_username",
   rsaPub: (u) => `acrypt_${u}_rsa_pub_spki_b64`,
   rsaPriv: (u) => `acrypt_${u}_rsa_priv_pkcs8_enc_b64`,
+  signPub: (u) => `acrypt_${u}_sign_pub_spki_b64`,
+  signPriv: (u) => `acrypt_${u}_sign_priv_pkcs8_enc_b64`,
 };
 
 function log(msg) {
@@ -56,6 +58,8 @@ async function api(path, opts = {}) {
     : await res.text().catch(() => "");
 
   if (!res.ok) {
+    // Extract the most informative error message available:
+    // prefer the server's JSON "error" field, then raw text, then the HTTP status code.
     const msg =
       (payload && typeof payload === "object" && payload.error) ? payload.error :
       (typeof payload === "string" && payload.trim()) ? payload :
@@ -66,6 +70,8 @@ async function api(path, opts = {}) {
 }
 
 function bufToB64(buf) {
+  // Convert an ArrayBuffer/TypedArray to a base64 string.
+  // We build a binary string first because btoa() only accepts strings, not raw buffers.
   const bytes = new Uint8Array(buf);
   let bin = "";
   for (const b of bytes) bin += String.fromCharCode(b);
@@ -73,6 +79,7 @@ function bufToB64(buf) {
 }
 
 function b64ToBuf(b64) {
+  // Convert a base64 string back to an ArrayBuffer for use with WebCrypto APIs.
   const bin = atob(b64);
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);

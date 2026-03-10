@@ -7,47 +7,52 @@
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <header>
-    <h1>ACrypt Secure Share</h1>
-    <div class="row">
-      <label>API Server URL</label>
-      <input id="serverUrl" value="http://127.0.0.1:5000" />
-      <button id="saveServer" type="button">Save</button>
+  <div class="auth-wrap">
+    <div class="auth-card">
+      <div class="auth-logo">
+        <div class="logo-icon">🔐</div>
+        <h1>ACrypt</h1>
+        <p>Secure encrypted file sharing</p>
+      </div>
+
+      <div class="field">
+        <label>API Server URL</label>
+        <input id="serverUrl" value="http://127.0.0.1:5000" />
+      </div>
+      <button id="saveServer" type="button" class="secondary btn-sm" style="margin-bottom:20px">Save Server URL</button>
+
+      <hr class="divider" />
+
+      <h2 style="margin-bottom:4px">Create account</h2>
+      <p>Keys are generated locally. Your public key is registered with the server.</p>
+
+      <div class="field">
+        <label>Username</label>
+        <input id="regUser" placeholder="alice" autocomplete="username" />
+      </div>
+      <div class="field">
+        <label>Password</label>
+        <input id="regPass" type="password" placeholder="••••••••" autocomplete="new-password" />
+      </div>
+
+      <button id="registerBtn" type="button" style="width:100%;margin-top:4px">Create Account →</button>
+      <div class="muted" id="status" style="margin-top:12px;text-align:center"></div>
+
+      <div class="auth-footer">Already have an account? <a href="/login">Sign in</a></div>
     </div>
-  </header>
-
-  <main class="grid single">
-    <section class="card">
-      <h2>Create an account</h2>
-      <p class="muted">Keys are generated locally and the public key is registered with the server.</p>
-
-      <label>Username</label>
-      <input id="regUser" placeholder="alice" />
-
-      <label>Password</label>
-      <input id="regPass" type="password" placeholder="password123" />
-
-      <button id="registerBtn" type="button">Register</button>
-      <div class="muted" id="status"></div>
-    </section>
-
-    <section class="card">
-      <h2>Logs</h2>
-      <pre id="logBox"></pre>
-    </section>
-  </main>
+  </div>
+  <pre id="logBox" style="display:none"></pre>
 
   <script src="/common.js" defer></script>
-  <script src="/navbar.js" defer></script>
   <script src="/auth.js" defer></script>
   <script defer>
     window.addEventListener("DOMContentLoaded", () => {
       initServerUrlUI();
       document.getElementById("registerBtn").addEventListener("click", async () => {
         try {
-          setStatus("status", "Registering…");
+          setStatus("status", "Generating keys & registering…");
           await registerFlow();
-          setStatus("status", "✅ Registered successfully. You can now login.");
+          setStatus("status", "✅ Registered! You can now sign in.");
         } catch (e) {
           log(`Register error: ${e.message}`);
           setStatus("status", `❌ ${e.message}`);

@@ -9,6 +9,7 @@ from crypto_utils import (
     encrypt_private_key_pem, decrypt_private_key_pem,
     wrap_dek_for_user, unwrap_dek_for_user,
     encrypt_bytes_aesgcm, decrypt_bytes_aesgcm,
+    sign_bytes, verify_signature, make_upload_message,
     b64e, b64d
 )
 
@@ -85,6 +86,7 @@ def get_user_rsa_pub(server: str, username: str) -> bytes:
 
 def upload(server: str, username: str, password: str, filepath: str):
     token = load_token(username)
+    rsa_priv, sign_priv = load_private_keys(username, password)
 
     plaintext = Path(filepath).read_bytes()
     dek = os.urandom(32)  # per-file symmetric key
@@ -94,14 +96,26 @@ def upload(server: str, username: str, password: str, filepath: str):
     rsa_pub = load_bytes(user_dir(username) / "rsa_pub.pem")
     wrapped_for_owner = wrap_dek_for_user(dek, rsa_pub)
 
+    # Generate the file_id client-side so it can be included in the signed message
+    # before the server sees the upload. The server uses whichever file_id arrives
+    # in the request body (falling back to its own random ID only if omitted), so
+    # both sides agree on the ID that was signed.
+    import secrets as _secrets  # local import avoids shadowing the top-level 'os' namespace
+    file_id = _secrets.token_urlsafe(16)
+    version = 1
+    msg = make_upload_message(file_id, nonce, ciphertext, version)
+    signature = sign_bytes(msg, sign_priv)
+
     r = requests.post(
         f"{server}/upload",
         headers={"Authorization": f"Bearer {token}"},
         json={
+            "file_id": file_id,
             "filename": Path(filepath).name,
             "nonce_b64": b64e(nonce),
             "ciphertext_b64": b64e(ciphertext),
             "wrapped_dek_b64": b64e(wrapped_for_owner),
+            "sig_b64": b64e(signature),
         }
     )
     print(r.status_code, r.text)
@@ -116,6 +130,9 @@ def list_files(server: str, username: str):
 
 def download(server: str, username: str, password: str, file_id: str, outpath: str):
     token = load_token(username)
+    # Only the RSA private key is needed for download (to unwrap the DEK).
+    # The signing key (_) is not used here; signature verification uses the
+    # signer's *public* key fetched from the server instead.
     rsa_priv, _ = load_private_keys(username, password)
 
     r = requests.get(f"{server}/download/{file_id}", headers={"Authorization": f"Bearer {token}"})
@@ -126,6 +143,23 @@ def download(server: str, username: str, password: str, file_id: str, outpath: s
     ciphertext = b64d(j["ciphertext_b64"])
     wrapped = b64d(j["wrapped_dek_b64"])
 
+    # Verify the uploader's signature over the ciphertext before decrypting
+    sig_b64 = j.get("sig_b64") or ""
+    signer = j.get("signer") or ""
+    if sig_b64 and signer:
+        sig = b64d(sig_b64)
+        signer_pub_resp = requests.get(f"{server}/user_pubkeys/{signer}")
+        signer_pub_resp.raise_for_status()
+        signer_pub_pem = b64d(signer_pub_resp.json()["sign_pub_pem_b64"])
+        msg = make_upload_message(file_id, nonce, ciphertext, j["version"])
+        if not verify_signature(msg, sig, signer_pub_pem):
+            print(f"⚠️  WARNING: signature verification FAILED for file {file_id} (signer={signer}). "
+                  "The ciphertext may have been tampered with by the server.")
+        else:
+            print(f"✅ Signature verified: ciphertext signed by {signer} at version {j['version']}")
+    else:
+        print("⚠️  WARNING: no signature present for this file.")
+
     dek = unwrap_dek_for_user(wrapped, rsa_priv)
     plaintext = decrypt_bytes_aesgcm(nonce, ciphertext, dek)
 
@@ -135,6 +169,7 @@ def download(server: str, username: str, password: str, file_id: str, outpath: s
 
 def grant(server: str, username: str, password: str, file_id: str, recipient: str):
     token = load_token(username)
+    # Only the RSA private key is needed to unwrap the DEK; signing key unused here.
     rsa_priv, _ = load_private_keys(username, password)
 
     # Download your wrapped key so you can recover DEK
@@ -159,6 +194,44 @@ def grant(server: str, username: str, password: str, file_id: str, recipient: st
     print(rr.status_code, rr.text)
 
 
+def modify(server: str, username: str, password: str, file_id: str, filepath: str):
+    """
+    Re-encrypt a locally modified file using the existing DEK for this file,
+    then push the new ciphertext to the server.  The DEK is not changed, so all
+    currently authorised users can still decrypt the updated file.
+    The upload is signed with the user's Ed25519 signing key.
+    """
+    token = load_token(username)
+    rsa_priv, sign_priv = load_private_keys(username, password)
+
+    # Fetch current wrapped DEK for this user and current version
+    r = requests.get(f"{server}/download/{file_id}", headers={"Authorization": f"Bearer {token}"})
+    r.raise_for_status()
+    j = r.json()
+    dek = unwrap_dek_for_user(b64d(j["wrapped_dek_b64"]), rsa_priv)
+    new_version = int(j["version"]) + 1
+
+    # Encrypt the new plaintext with the same DEK
+    plaintext = Path(filepath).read_bytes()
+    nonce, ciphertext = encrypt_bytes_aesgcm(plaintext, dek)
+
+    # Sign the new ciphertext
+    msg = make_upload_message(file_id, nonce, ciphertext, new_version)
+    signature = sign_bytes(msg, sign_priv)
+
+    rr = requests.post(
+        f"{server}/update",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "file_id": file_id,
+            "nonce_b64": b64e(nonce),
+            "ciphertext_b64": b64e(ciphertext),
+            "sig_b64": b64e(signature),
+        }
+    )
+    print(rr.status_code, rr.text)
+
+
 def revoke(server: str, username: str, file_id: str, recipient: str):
     token = load_token(username)
     rr = requests.post(
@@ -172,9 +245,10 @@ def revoke(server: str, username: str, file_id: str, recipient: str):
 def rotate(server: str, username: str, password: str, file_id: str, allowed_users: list[str]):
     """
     Strong revocation: re-encrypt under a fresh DEK and re-wrap only for allowed users.
+    The new ciphertext is signed with the owner's Ed25519 signing key.
     """
     token = load_token(username)
-    rsa_priv, _ = load_private_keys(username, password)
+    rsa_priv, sign_priv = load_private_keys(username, password)
 
     r = requests.get(f"{server}/download/{file_id}", headers={"Authorization": f"Bearer {token}"})
     r.raise_for_status()
@@ -195,6 +269,10 @@ def rotate(server: str, username: str, password: str, file_id: str, allowed_user
         pub = get_user_rsa_pub(server, u)
         wrapped_map[u] = b64e(wrap_dek_for_user(new_dek, pub))
 
+    new_version = int(j["version"]) + 1
+    msg = make_upload_message(file_id, new_nonce, new_ct, new_version)
+    signature = sign_bytes(msg, sign_priv)
+
     rr = requests.post(
         f"{server}/rotate",
         headers={"Authorization": f"Bearer {token}"},
@@ -202,6 +280,7 @@ def rotate(server: str, username: str, password: str, file_id: str, allowed_user
             "file_id": file_id,
             "nonce_b64": b64e(new_nonce),
             "ciphertext_b64": b64e(new_ct),
+            "sig_b64": b64e(signature),
             "wrapped_map": wrapped_map,
         }
     )
@@ -241,6 +320,12 @@ def main():
     p.add_argument("file_id")
     p.add_argument("recipient")
 
+    p = sub.add_parser("modify")
+    p.add_argument("username")
+    p.add_argument("password")
+    p.add_argument("file_id")
+    p.add_argument("filepath")
+
     p = sub.add_parser("revoke")
     p.add_argument("username")
     p.add_argument("file_id")
@@ -267,6 +352,8 @@ def main():
         download(args.server, args.username, args.password, args.file_id, args.outpath)
     elif args.cmd == "grant":
         grant(args.server, args.username, args.password, args.file_id, args.recipient)
+    elif args.cmd == "modify":
+        modify(args.server, args.username, args.password, args.file_id, args.filepath)
     elif args.cmd == "revoke":
         revoke(args.server, args.username, args.file_id, args.recipient)
     elif args.cmd == "rotate":
