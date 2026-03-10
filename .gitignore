@@ -204,3 +204,7 @@ __marimo__/
 
 # custom
 server_data/
+*.secret
+*.db
+server.db
+server_data/files
