@@ -9,7 +9,7 @@ from typing import Optional
 from flask import Flask, request, jsonify, send_file, abort
 from flask_cors import CORS
 
-from crypto_utils import hash_password, verify_password
+from crypto_utils import hash_password, verify_password, verify_signature, make_upload_message
 
 APP = Flask(__name__)
 CORS(APP)
@@ -24,6 +24,8 @@ def db():
     DATA_DIR.mkdir(exist_ok=True)
     FILES_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
+    # row_factory lets rows be accessed by column name (row["username"])
+    # instead of by positional index (row[0]).
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -54,6 +56,8 @@ def init_db():
             ciphertext_path TEXT NOT NULL,
             version INTEGER NOT NULL,
             created_at INTEGER NOT NULL,
+            sig_b64 TEXT,
+            signer TEXT,
             FOREIGN KEY(owner) REFERENCES users(username)
         )""")
         conn.execute("""
@@ -73,6 +77,8 @@ def now() -> int:
 
 
 def issue_token(username: str) -> str:
+    # token_urlsafe(32) produces 32 random bytes encoded as URL-safe base64 (~43 chars).
+    # 256 bits of entropy makes brute-force guessing infeasible.
     token = secrets.token_urlsafe(32)
     with db() as conn:
         conn.execute(
@@ -178,8 +184,9 @@ def user_pubkeys(username: str):
 @APP.post("/upload")
 def upload():
     """
-    Client uploads ciphertext + nonce + wrapped_dek_for_owner.
-    Server stores ciphertext only.
+    Client uploads ciphertext + nonce + wrapped_dek_for_owner + Ed25519 signature.
+    Server verifies the signature using the uploader's registered signing public key,
+    then stores ciphertext and the signature for future download verification.
     """
     user = require_user()
 
@@ -188,22 +195,41 @@ def upload():
     nonce_b64 = data.get("nonce_b64") or ""
     ciphertext_b64 = data.get("ciphertext_b64") or ""
     wrapped_dek_b64 = data.get("wrapped_dek_b64") or ""
+    sig_b64 = data.get("sig_b64") or ""
 
-    if not filename or not nonce_b64 or not ciphertext_b64 or not wrapped_dek_b64:
+    if not filename or not nonce_b64 or not ciphertext_b64 or not wrapped_dek_b64 or not sig_b64:
         return jsonify({"error": "missing fields"}), 400
 
     nonce = base64.b64decode(nonce_b64)
     ciphertext = base64.b64decode(ciphertext_b64)
     wrapped_dek = base64.b64decode(wrapped_dek_b64)
+    signature = base64.b64decode(sig_b64)
 
-    file_id = secrets.token_urlsafe(16)
+    # Accept a client-provided file_id so both sides can agree on the ID before
+    # the signature is verified. Fall back to a server-generated ID only if the
+    # client didn't supply one (e.g. older clients).
+    file_id = (data.get("file_id") or "").strip() or secrets.token_urlsafe(16)
+    version = 1
+
+    # Verify signature before persisting anything
+    with db() as conn:
+        row = conn.execute("SELECT sign_pub_pem FROM users WHERE username=?", (user,)).fetchone()
+    if not row:
+        return jsonify({"error": "user not found"}), 404
+
+    msg = make_upload_message(file_id, nonce, ciphertext, version)
+    # bytes() cast: SQLite returns a memoryview for BLOB columns; convert to plain bytes
+    # before passing to the cryptography library, which requires a bytes-like object.
+    if not verify_signature(msg, signature, bytes(row["sign_pub_pem"])):
+        return jsonify({"error": "invalid signature"}), 403
+
     ct_path = FILES_DIR / f"{file_id}.bin"
     ct_path.write_bytes(ciphertext)
 
     with db() as conn:
         conn.execute(
-            "INSERT INTO files(file_id, owner, filename, nonce, ciphertext_path, version, created_at) VALUES (?,?,?,?,?,?,?)",
-            (file_id, user, filename, nonce, str(ct_path), 1, now())
+            "INSERT INTO files(file_id, owner, filename, nonce, ciphertext_path, version, created_at, sig_b64, signer) VALUES (?,?,?,?,?,?,?,?,?)",
+            (file_id, user, filename, nonce, str(ct_path), version, now(), sig_b64, user)
         )
         conn.execute(
             "INSERT INTO file_keys(file_id, username, wrapped_dek) VALUES (?,?,?)",
@@ -211,13 +237,16 @@ def upload():
         )
         conn.commit()
 
-    return jsonify({"file_id": file_id, "version": 1})
+    return jsonify({"file_id": file_id, "version": version})
 
 
 @APP.get("/list")
 def list_files():
     user = require_user()
     with db() as conn:
+        # JOIN on file_keys rather than querying files directly so that the result
+        # is automatically scoped to only files this user has a wrapped DEK for
+        # (i.e. files they are authorised to access).
         rows = conn.execute("""
             SELECT f.file_id, f.owner, f.filename, f.version, f.created_at
             FROM files f
@@ -253,8 +282,89 @@ def download(file_id: str):
         "nonce_b64": base64.b64encode(f["nonce"]).decode("ascii"),
         "ciphertext_b64": base64.b64encode(ciphertext).decode("ascii"),
         "wrapped_dek_b64": base64.b64encode(k["wrapped_dek"]).decode("ascii"),
+        "sig_b64": f["sig_b64"] or "",
+        "signer": f["signer"] or "",
     })
 
+@APP.post("/update")
+def update():
+    """
+    Any user with access (not just owner) can upload a new ciphertext for a file.
+    The client re-encrypts the modified plaintext with the *same* DEK they already
+    hold via their wrapped_dek entry.  A fresh nonce must be provided.
+    The client must also provide an Ed25519 signature over the canonical upload message.
+    Wrapped DEK entries for all authorised users remain unchanged (DEK is not rotated).
+    Use /rotate if you want a full key rotation (owner-only).
+    """
+    user = require_user()
+    data = request.json or {}
+    file_id = data.get("file_id") or ""
+    nonce_b64 = data.get("nonce_b64") or ""
+    ciphertext_b64 = data.get("ciphertext_b64") or ""
+    sig_b64 = data.get("sig_b64") or ""
+
+    if not file_id or not nonce_b64 or not ciphertext_b64 or not sig_b64:
+        return jsonify({"error": "missing fields"}), 400
+
+    nonce = base64.b64decode(nonce_b64)
+    ciphertext = base64.b64decode(ciphertext_b64)
+    signature = base64.b64decode(sig_b64)
+
+    with db() as conn:
+        f = conn.execute("SELECT * FROM files WHERE file_id=?", (file_id,)).fetchone()
+        if not f:
+            return jsonify({"error": "no such file"}), 404
+
+        # Verify the requesting user actually has access (has a wrapped DEK entry)
+        k = conn.execute(
+            "SELECT 1 FROM file_keys WHERE file_id=? AND username=?",
+            (file_id, user)
+        ).fetchone()
+        if not k:
+            return jsonify({"error": "no access"}), 403
+
+        new_version = int(f["version"]) + 1
+
+        # Verify signature before persisting
+        sign_row = conn.execute("SELECT sign_pub_pem FROM users WHERE username=?", (user,)).fetchone()
+        if not sign_row:
+            return jsonify({"error": "user not found"}), 404
+
+        msg = make_upload_message(file_id, nonce, ciphertext, new_version)
+        if not verify_signature(msg, signature, bytes(sign_row["sign_pub_pem"])):
+            return jsonify({"error": "invalid signature"}), 403
+
+        Path(f["ciphertext_path"]).write_bytes(ciphertext)
+        conn.execute(
+            "UPDATE files SET nonce=?, version=?, sig_b64=?, signer=? WHERE file_id=?",
+            (nonce, new_version, sig_b64, user, file_id)
+        )
+        conn.commit()
+
+    return jsonify({"ok": True, "version": new_version})
+
+
+@APP.get("/allowed/<file_id>")
+def allowed_users(file_id: str):
+    """Return current allowed users for a file (owner-only).
+
+    Used by the UI to show a proper "<user> access has been revoked" prompt/message
+    before/after a strong revoke (key rotation).
+    """
+    user = require_user()
+    with db() as conn:
+        f = conn.execute("SELECT owner FROM files WHERE file_id=?", (file_id,)).fetchone()
+        if not f:
+            return jsonify({"error": "no such file"}), 404
+        if f["owner"] != user:
+            return jsonify({"error": "only owner can view allowed users"}), 403
+
+        rows = conn.execute(
+            "SELECT username FROM file_keys WHERE file_id=? ORDER BY username ASC",
+            (file_id,)
+        ).fetchall()
+
+    return jsonify({"file_id": file_id, "allowed": [r["username"] for r in rows]})
 
 @APP.post("/grant")
 def grant():
@@ -283,6 +393,9 @@ def grant():
         if not u:
             return jsonify({"error": "no such recipient"}), 404
 
+        # INSERT OR REPLACE handles re-granting: if the user already has a wrapped
+        # DEK entry (e.g. after a previous grant), it is atomically replaced with
+        # the new one rather than raising a uniqueness conflict.
         conn.execute(
             "INSERT OR REPLACE INTO file_keys(file_id, username, wrapped_dek) VALUES (?,?,?)",
             (file_id, recipient, wrapped_dek)
@@ -318,10 +431,50 @@ def revoke():
     return jsonify({"ok": True, "note": "For strong revocation, rotate the file key."})
 
 
+@APP.delete("/delete/<file_id>")
+def delete_file(file_id: str):
+    """
+    Permanently delete a file. Only the original owner may do this.
+    Removes the ciphertext blob from disk, and all associated rows from
+    the files and file_keys tables (cascade-style, in FK-safe order).
+    """
+    user = require_user()
+
+    with db() as conn:
+        f = conn.execute(
+            "SELECT owner, ciphertext_path FROM files WHERE file_id=?", (file_id,)
+        ).fetchone()
+
+        if not f:
+            return jsonify({"error": "no such file"}), 404
+
+        # Only the original owner is allowed to delete
+        if f["owner"] != user:
+            return jsonify({"error": "only the owner can delete this file"}), 403
+
+        ct_path = Path(f["ciphertext_path"])
+
+        # Delete child rows first (FK constraints: file_keys references files)
+        conn.execute("DELETE FROM file_keys WHERE file_id=?", (file_id,))
+        conn.execute("DELETE FROM files WHERE file_id=?", (file_id,))
+        conn.commit()
+
+    # Remove the ciphertext blob from disk after DB rows are gone
+    try:
+        if ct_path.exists():
+            ct_path.unlink()
+    except OSError:
+        # Non-fatal: DB rows are already deleted; log but don't fail the request
+        pass
+
+    return jsonify({"ok": True, "deleted": file_id})
+
+
 @APP.post("/rotate")
 def rotate():
     """
     Owner uploads a new ciphertext+nonce and a full new set of wrapped keys for allowed users.
+    An Ed25519 signature over the new ciphertext is required and stored.
     This gives strong revocation (re-key + re-encrypt).
     """
     user = require_user()
@@ -329,14 +482,16 @@ def rotate():
     file_id = data.get("file_id") or ""
     nonce_b64 = data.get("nonce_b64") or ""
     ciphertext_b64 = data.get("ciphertext_b64") or ""
+    sig_b64 = data.get("sig_b64") or ""
     # wrapped_map: { "username": "wrapped_dek_b64", ... }
     wrapped_map = data.get("wrapped_map") or {}
 
-    if not file_id or not nonce_b64 or not ciphertext_b64 or not isinstance(wrapped_map, dict) or not wrapped_map:
+    if not file_id or not nonce_b64 or not ciphertext_b64 or not sig_b64 or not isinstance(wrapped_map, dict) or not wrapped_map:
         return jsonify({"error": "missing fields"}), 400
 
     nonce = base64.b64decode(nonce_b64)
     ciphertext = base64.b64decode(ciphertext_b64)
+    signature = base64.b64decode(sig_b64)
 
     with db() as conn:
         f = conn.execute("SELECT owner, ciphertext_path, version FROM files WHERE file_id=?", (file_id,)).fetchone()
@@ -345,10 +500,26 @@ def rotate():
         if f["owner"] != user:
             return jsonify({"error": "only owner can rotate"}), 403
 
-        Path(f["ciphertext_path"]).write_bytes(ciphertext)
         new_version = int(f["version"]) + 1
 
-        conn.execute("UPDATE files SET nonce=?, version=? WHERE file_id=?", (nonce, new_version, file_id))
+        # Verify signature before persisting
+        sign_row = conn.execute("SELECT sign_pub_pem FROM users WHERE username=?", (user,)).fetchone()
+        if not sign_row:
+            return jsonify({"error": "user not found"}), 404
+
+        msg = make_upload_message(file_id, nonce, ciphertext, new_version)
+        if not verify_signature(msg, signature, bytes(sign_row["sign_pub_pem"])):
+            return jsonify({"error": "invalid signature"}), 403
+
+        Path(f["ciphertext_path"]).write_bytes(ciphertext)
+        conn.execute(
+            "UPDATE files SET nonce=?, version=?, sig_b64=?, signer=? WHERE file_id=?",
+            (nonce, new_version, sig_b64, user, file_id)
+        )
+        # Delete ALL existing wrapped DEK entries for this file first, then
+        # re-insert only for the allowed users supplied by the owner. This is
+        # what makes rotation a strong revocation: any user not in wrapped_map
+        # loses their key entry and cannot decrypt the new ciphertext.
         conn.execute("DELETE FROM file_keys WHERE file_id=?", (file_id,))
 
         for uname, wrapped_b64 in wrapped_map.items():
@@ -357,6 +528,7 @@ def rotate():
                 (file_id, uname, base64.b64decode(wrapped_b64))
             )
 
+        # All changes (file metadata + key table replacement) committed atomically
         conn.commit()
 
     return jsonify({"ok": True, "version": new_version})
@@ -379,7 +551,9 @@ def clear_all_server_state():
         except Exception:
             pass
 
-    # Clear database tables (order matters due to foreign keys)
+    # Delete in child-first order to satisfy foreign key constraints:
+    # file_keys references both files and users; files references users;
+    # sessions references users. users must be deleted last.
     with db() as conn:
         conn.execute("DELETE FROM file_keys")
         conn.execute("DELETE FROM files")
