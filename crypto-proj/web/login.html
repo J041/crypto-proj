@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Login • ACrypt</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="auth-wrap">
+    <div class="auth-card">
+      <div class="auth-logo">
+        <div class="logo-icon">🔐</div>
+        <h1>ACrypt</h1>
+        <p>Secure encrypted file sharing</p>
+      </div>
+
+      <div class="field">
+        <label>API Server URL</label>
+        <input id="serverUrl" value="http://127.0.0.1:5000" />
+      </div>
+      <button id="saveServer" type="button" class="secondary btn-sm" style="margin-bottom:20px">Save Server URL</button>
+
+      <hr class="divider" />
+
+      <h2 style="margin-bottom:16px">Sign in</h2>
+
+      <div class="field">
+        <label>Username</label>
+        <input id="logUser" placeholder="alice" autocomplete="username" />
+      </div>
+      <div class="field">
+        <label>Password</label>
+        <input id="logPass" type="password" placeholder="••••••••" autocomplete="current-password" />
+      </div>
+
+      <button id="loginBtn" type="button" style="width:100%;margin-top:4px">Sign In →</button>
+      <div class="muted" id="status" style="margin-top:12px;text-align:center"></div>
+
+      <div class="auth-footer">Don't have an account? <a href="/register">Register</a></div>
+    </div>
+  </div>
+  <pre id="logBox" style="display:none"></pre>
+
+  <script src="/common.js" defer></script>
+  <script src="/auth.js" defer></script>
+  <script defer>
+    window.addEventListener("DOMContentLoaded", () => {
+      initServerUrlUI();
+      if (getToken() && getUsername()) { location.href = "/dashboard"; return; }
+      document.getElementById("loginBtn").addEventListener("click", async () => {
+        try {
+          setStatus("status", "Signing in…");
+          await loginFlow();
+          setStatus("status", "✅ Success! Redirecting…");
+          location.href = "/dashboard";
+        } catch (e) {
+          log(`Login error: ${e.message}`);
+          setStatus("status", `❌ ${e.message}`);
+        }
+      });
+      document.getElementById("logPass").addEventListener("keydown", e => {
+        if (e.key === "Enter") document.getElementById("loginBtn").click();
+      });
+    });
+  </script>
+</body>
+</html>
