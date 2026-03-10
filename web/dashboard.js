@@ -255,35 +255,12 @@ async function downloadFlow(fileId) {
   try {
     j = await api(`/download/${fileId}`);
   } catch (e) {
-    if ((e.message || "").toLowerCase().includes("no access")) {
-      alert("You no longer have access to this file. The owner may have rotated the encryption keys.");
-      log(`❌ Download blocked: no access (possibly revoked) for file ${fileId}`);
-      return;
-    }
-    alert(`Download failed: ${e.message}`);
     log(`Download API error: ${e.message}`);
     return;
   }
 
-
-  let dek;
-  try {
-    dek = await rsaUnwrap(j.wrapped_dek_b64, priv);
-  } catch (e) {
-    alert("Could not decrypt the file key. Your local private key may be out of sync (try re-registering on this browser).");
-    log(`❌ Unwrap failed for ${fileId}: ${e.message}`);
-    return;
-  }
-
-  let pt;
-  try {
-    pt = await aesGcmDecrypt(j.nonce_b64, j.ciphertext_b64, dek);
-  } catch (e) {
-    alert("Could not decrypt the file content. The file may have been rotated and you don't have the new key.");
-    log(`❌ Decrypt failed for ${fileId}: ${e.message}`);
-    return;
-  }
-
+  const dek = await rsaUnwrap(j.wrapped_dek_b64, priv);
+  const pt = await aesGcmDecrypt(j.nonce_b64, j.ciphertext_b64, dek);
 
   const blob = new Blob([pt], { type: "application/octet-stream" });
   const a = document.createElement("a");
@@ -430,9 +407,6 @@ async function rotateFlow() {
     wrapped_map[u] = await rsaWrap(newDek, pub);
   }
 
-  const a = await api(`/allowed/${fileId}`);
-  oldAllowed = Array.isArray(a.allowed) ? a.allowed : [];
-
   const rr = await api("/rotate", {
     method: "POST",
     body: JSON.stringify({
@@ -443,23 +417,7 @@ async function rotateFlow() {
     })
   });
 
-  const revokedUsers = oldAllowed.filter((u) => !allowedUsers.includes(u));
-  if (revokedUsers.length > 0) {
-    const ok = confirm(
-      `You are about to revoke access for: ${revokedUsers.join(", ")}.\n\n` +
-      "They will no longer be able to decrypt or download this file after rotation.\n\n" +
-      "Continue?"
-    );
-    if (!ok) return;
-  }
-
-  if (revokedUsers.length > 0) {
-    setStatus("ownerStatus", `✅ Access revoked for ${revokedUsers.join(", ")}. Rotated key. New version=${rr.version}`);
-  } 
-  else {
-    setStatus("ownerStatus", `✅ Rotated key. New version=${rr.version}`);
-  }
-
+  setStatus("ownerStatus", `✅ Rotated key. New version=${rr.version}`);
   log(`Rotated ${fileId} -> version ${rr.version}`);
   await refreshList();
 }
