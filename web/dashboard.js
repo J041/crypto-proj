@@ -11,7 +11,7 @@ function requireAuthOrRedirect() {
 function bind(id, event, handler) {
   const el = document.getElementById(id);
   if (!el) {
-    log(`❌ Missing element #${id} on this page`);
+    log(`Missing element #${id} on this page`);
     return;
   }
   el.addEventListener(event, handler);
@@ -367,7 +367,7 @@ async function uploadFlow() {
   try {
     signPrivKey = await loadLocalSignPrivateKey(username, password);
   } catch (e) {
-    setStatus("uploadStatus", `❌ Could not load signing key: ${e.message}`);
+    setStatus("uploadStatus", `Could not load signing key: ${e.message}`);
     return;
   }
   const msgBytes = await makeUploadMessage(fileId, enc.ivB64, enc.ctB64, version);
@@ -394,7 +394,7 @@ async function uploadFlow() {
     return;
   }
 
-  setStatus("uploadStatus", `✅ Upload successful: ${file.name} (file_id=${res.file_id}, v${res.version})`);
+  setStatus("uploadStatus", `Upload successful: ${file.name} (file_id=${res.file_id}, v${res.version})`);
   log(`Uploaded ${file.name} -> ${res.file_id}`);
 
   await refreshList();
@@ -420,7 +420,7 @@ async function downloadFlow(fileId) {
   } catch (e) {
     if ((e.message || "").toLowerCase().includes("no access")) {
       alert("You no longer have access to this file. The owner may have rotated the encryption keys.");
-      log(`❌ Download blocked: no access (possibly revoked) for file ${fileId}`);
+      log(`Download blocked: no access (possibly revoked) for file ${fileId}`);
       return;
     }
     alert(`Download failed: ${e.message}`);
@@ -440,10 +440,10 @@ async function downloadFlow(fileId) {
       const valid = await ecdsaVerify(msgBytes, sigB64, signerSignPub);
       if (!valid) {
         alert(`⚠️ Signature verification FAILED for file ${fileId} (signer: ${signer}).\nThe ciphertext may have been tampered with. Aborting download.`);
-        log(`❌ Signature invalid for ${fileId} — download aborted`);
+        log(`Signature invalid for ${fileId} — download aborted`);
         return;
       }
-      log(`✅ Signature verified: ciphertext signed by ${signer} at version ${j.version}`);
+      log(`Signature verified: ciphertext signed by ${signer} at version ${j.version}`);
     } catch (e) {
       log(`⚠️ Signature check error: ${e.message} — proceeding without verification`);
     }
@@ -456,7 +456,7 @@ async function downloadFlow(fileId) {
     dek = await rsaUnwrap(j.wrapped_dek_b64, priv);
   } catch (e) {
     alert("Could not decrypt the file key. Your local private key may be out of sync (try re-registering on this browser).");
-    log(`❌ Unwrap failed for ${fileId}: ${e.message}`);
+    log(`Unwrap failed for ${fileId}: ${e.message}`);
     return;
   }
 
@@ -465,7 +465,7 @@ async function downloadFlow(fileId) {
     pt = await aesGcmDecrypt(j.nonce_b64, j.ciphertext_b64, dek);
   } catch (e) {
     alert("Could not decrypt the file content. The file may have been rotated and you don't have the new key.");
-    log(`❌ Decrypt failed for ${fileId}: ${e.message}`);
+    log(`Decrypt failed for ${fileId}: ${e.message}`);
     return;
   }
 
@@ -505,10 +505,10 @@ async function grantFlow() {
   try {
     log("Step 1/5: Loading owner private key…");
     priv = await loadLocalPrivateKey(owner, password);
-    log("✅ Step 1 ok");
+    log("Step 1 ok");
   } catch (e) {
-    setStatus("ownerStatus", `❌ ${e.message}`);
-    log(`❌ Step 1 failed: ${e.message}`);
+    setStatus("ownerStatus", `${e.message}`);
+    log(`Step 1 failed: ${e.message}`);
     return;
   }
 
@@ -516,10 +516,10 @@ async function grantFlow() {
   try {
     log("Step 2/5: Downloading wrapped DEK for owner…");
     dl = await api(`/download/${fileId}`);
-    log("✅ Step 2 ok");
+    log("Step 2 ok");
   } catch (e) {
-    setStatus("ownerStatus", `❌ Download failed: ${e.message}`);
-    log(`❌ Step 2 failed: ${e.message}`);
+    setStatus("ownerStatus", `Download failed: ${e.message}`);
+    log(`Step 2 failed: ${e.message}`);
     return;
   }
 
@@ -527,10 +527,10 @@ async function grantFlow() {
   try {
     log("Step 3/5: Unwrapping DEK with owner private key…");
     dek = await rsaUnwrap(dl.wrapped_dek_b64, priv);
-    log(`✅ Step 3 ok (DEK length=${dek.length})`);
+    log(`Step 3 ok (DEK length=${dek.length})`);
   } catch (e) {
-    setStatus("ownerStatus", `❌ Could not unwrap file key (wrong password/key?): ${e.message}`);
-    log(`❌ Step 3 failed: ${e.message}`);
+    setStatus("ownerStatus", `Could not unwrap file key (wrong password/key?): ${e.message}`);
+    log(`Step 3 failed: ${e.message}`);
     return;
   }
 
@@ -539,10 +539,10 @@ async function grantFlow() {
     log("Step 4/5: Fetching + importing recipient public key…");
     pubObj = await api(`/user_pubkeys/${recipient}`);
     recipientPub = await importSpkiPublicKeyFromServer(pubObj.rsa_pub_pem_b64);
-    log("✅ Step 4 ok");
+    log("Step 4 ok");
   } catch (e) {
-    setStatus("ownerStatus", `❌ Recipient key import failed: ${e.message}`);
-    log(`❌ Step 4 failed: ${e.message}`);
+    setStatus("ownerStatus", `Recipient key import failed: ${e.message}`);
+    log(`Step 4 failed: ${e.message}`);
     return;
   }
 
@@ -550,10 +550,10 @@ async function grantFlow() {
   try {
     log("Step 5/5: Wrapping DEK for recipient…");
     wrappedForRecipient = await rsaWrap(dek, recipientPub);
-    log("✅ Step 5 ok");
+    log("Step 5 ok");
   } catch (e) {
-    setStatus("ownerStatus", `❌ RSA wrap failed: ${e.message}`);
-    log(`❌ Step 5 failed: ${e.message}`);
+    setStatus("ownerStatus", `RSA wrap failed: ${e.message}`);
+    log(`Step 5 failed: ${e.message}`);
     return;
   }
 
@@ -564,13 +564,13 @@ async function grantFlow() {
       body: JSON.stringify({ file_id: fileId, recipient, wrapped_dek_b64: wrappedForRecipient })
     });
   } catch (e) {
-    setStatus("ownerStatus", `❌ Server grant failed: ${e.message}`);
-    log(`❌ Server /grant failed: ${e.message}`);
+    setStatus("ownerStatus", `Server grant failed: ${e.message}`);
+    log(`Server /grant failed: ${e.message}`);
     return;
   }
 
-  setStatus("ownerStatus", `✅ Granted ${recipient} access to ${fileId}.`);
-  log(`✅ Grant complete: ${recipient} -> ${fileId}`);
+  setStatus("ownerStatus", `Granted user "${recipient}" access to ${fileId}.`);
+  log(`Grant complete: ${recipient} -> ${fileId}`);
 }
 
 async function revokeFlow() {
@@ -619,7 +619,7 @@ Note: for strong revocation (preventing use of a previously-downloaded key) use 
       body: JSON.stringify({ file_id: fileId, recipient })
     });
   } catch (e) {
-    setStatus("ownerStatus", `❌ Revoke failed: ${e.message}`);
+    setStatus("ownerStatus", `Revoke failed: ${e.message}`);
     return;
   }
 
@@ -634,7 +634,7 @@ Note: for strong revocation (preventing use of a previously-downloaded key) use 
     // Non-fatal
   }
 
-  setStatus("ownerStatus", `✅ ${recipient}'s access has been revoked.`);
+  setStatus("ownerStatus", `${recipient}'s access has been revoked.`);
   showAccessList(fileId, updatedUsers, recipient);
 }
 
@@ -699,7 +699,7 @@ async function modifyFlow() {
     priv = await loadLocalPrivateKey(username, password);
     signPrivKey = await loadLocalSignPrivateKey(username, password);
   } catch (e) {
-    setStatus("modifyStatus", `❌ ${e.message}`);
+    setStatus("modifyStatus", `${e.message}`);
     return;
   }
 
@@ -709,7 +709,7 @@ async function modifyFlow() {
   try {
     j = await api(`/download/${fileId}`);
   } catch (e) {
-    setStatus("modifyStatus", `❌ Could not fetch file: ${e.message}`);
+    setStatus("modifyStatus", `Could not fetch file: ${e.message}`);
     return;
   }
 
@@ -717,7 +717,7 @@ async function modifyFlow() {
   try {
     dek = await rsaUnwrap(j.wrapped_dek_b64, priv);
   } catch (e) {
-    setStatus("modifyStatus", `❌ Could not unwrap file key: ${e.message}`);
+    setStatus("modifyStatus", `Could not unwrap file key: ${e.message}`);
     return;
   }
 
@@ -745,11 +745,11 @@ async function modifyFlow() {
       })
     });
   } catch (e) {
-    setStatus("modifyStatus", `❌ Update failed: ${e.message}`);
+    setStatus("modifyStatus", `Update failed: ${e.message}`);
     return;
   }
 
-  setStatus("modifyStatus", `✅ File updated (new version=${res.version})`);
+  setStatus("modifyStatus", `File updated (new version=${res.version})`);
   log(`Modified ${fileId} -> version ${res.version}`);
   await refreshList();
 }
@@ -781,7 +781,7 @@ async function rotateFlow() {
     const a = await api(`/allowed/${fileId}`);
     oldAllowed = Array.isArray(a.allowed) ? a.allowed : [];
   } catch (e) {
-    setStatus("ownerStatus", `❌ Could not fetch current allowed users: ${e.message}`);
+    setStatus("ownerStatus", `Could not fetch current allowed users: ${e.message}`);
     return;
   }
 
@@ -818,7 +818,7 @@ async function rotateFlow() {
   try {
     signPrivKey = await loadLocalSignPrivateKey(username, password);
   } catch (e) {
-    setStatus("ownerStatus", `❌ Could not load signing key: ${e.message}`);
+    setStatus("ownerStatus", `Could not load signing key: ${e.message}`);
     return;
   }
   const msgBytes = await makeUploadMessage(fileId, enc.ivB64, enc.ctB64, newVersion);
@@ -836,9 +836,9 @@ async function rotateFlow() {
   });
 
   if (revokedUsers.length > 0) {
-    setStatus("ownerStatus", `✅ Access revoked for ${revokedUsers.join(", ")}. Rotated key. New version=${rr.version}`);
+    setStatus("ownerStatus", `Access revoked for ${revokedUsers.join(", ")}. Rotated key. New version=${rr.version}`);
   } else {
-    setStatus("ownerStatus", `✅ Rotated key. New version=${rr.version}`);
+    setStatus("ownerStatus", `Rotated key. New version=${rr.version}`);
   }
 
   log(`Rotated ${fileId} -> version ${rr.version}`);
@@ -857,7 +857,7 @@ function resetLocalKeysFlow() {
   localStorage.removeItem(LS.signPub(u));
   localStorage.removeItem(LS.signPriv(u));
 
-  log(`✅ Local keys cleared for ${u} on this browser.`);
+  log(`Local keys cleared for ${u} on this browser.`);
   alert("Local keys cleared. Now go to Register and create the account again (or register with the same username after server clear).");
 }
 
@@ -866,7 +866,7 @@ async function deleteFlow(fileId) {
   // fileId can be passed directly (from table button) or read from the input field
   const id = fileId || (document.getElementById("deleteFileId")?.value || "").trim();
   if (!id) {
-    setStatus("ownerStatus", "❌ Enter a File ID to delete.");
+    setStatus("ownerStatus", "Enter a File ID to delete.");
     return;
   }
 
@@ -883,14 +883,14 @@ async function deleteFlow(fileId) {
 
   try {
     await api(`/delete/${id}`, { method: "DELETE" });
-    setStatus("ownerStatus", `✅ File ${id} deleted.`);
-    log(`✅ Deleted file ${id}`);
+    setStatus("ownerStatus", `File ${id} deleted.`);
+    log(`Deleted file ${id}`);
     const inp = document.getElementById("deleteFileId");
     if (inp) inp.value = "";
     await refreshList();
   } catch (e) {
-    setStatus("ownerStatus", `❌ Delete failed: ${e.message}`);
-    log(`❌ Delete error: ${e.message}`);
+    setStatus("ownerStatus", `Delete failed: ${e.message}`);
+    log(`Delete error: ${e.message}`);
   }
 }
 
@@ -898,7 +898,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   if (!requireAuthOrRedirect()) return;
 
   initServerUrlUI();
-  log("✅ Dashboard ready: event listeners attaching");
+  log("Dashboard ready: event listeners attaching");
   log(`Server URL: ${getServer()}`);
   log(`Token present: ${getToken() ? "YES" : "NO"}`);
   log(`Username: ${getUsername() || "(none)"}`);
