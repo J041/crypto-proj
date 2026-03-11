@@ -1,14 +1,12 @@
 import base64
 import os
 import hashlib
-import hmac
-from dataclasses import dataclass
 from typing import Tuple
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.primitives.asymmetric import rsa, padding, ed25519, ec
+from cryptography.hazmat.primitives.asymmetric import rsa, padding, ec
 from cryptography.hazmat.primitives.asymmetric.ec import ECDSA
-from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature, encode_dss_signature
+from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
@@ -19,7 +17,7 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 def hash_password(password: str, salt: bytes | None = None) -> Tuple[bytes, bytes]:
     """
     Returns (salt, pw_hash). Uses PBKDF2-HMAC-SHA256.
-    Store salt+hash on server.
+    Store salt+hash on server; never store the plaintext password.
     """
     if salt is None:
         salt = os.urandom(16)  # fresh random salt prevents identical passwords hashing the same
@@ -50,85 +48,13 @@ def verify_password(password: str, salt: bytes, pw_hash: bytes) -> bool:
 
 
 # -------------------------
-# Keypairs (client-side)
-# -------------------------
-def generate_rsa_keypair() -> Tuple[bytes, bytes]:
-    """
-    Generates RSA-2048 keypair for key wrapping.
-    Returns (private_pem, public_pem).
-    """
-    priv = rsa.generate_private_key(
-        public_exponent=65537,  # F4; universally recommended — avoids small-exponent attacks
-        key_size=2048
-    )
-    priv_pem = priv.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption(),  # caller encrypts with password separately
-    )
-    pub_pem = priv.public_key().public_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo,
-    )
-    return priv_pem, pub_pem
-
-
-def generate_ed25519_keypair() -> Tuple[bytes, bytes]:
-    """
-    Generates Ed25519 signing keypair.
-    Returns (private_pem, public_pem).
-    """
-    priv = ed25519.Ed25519PrivateKey.generate()
-    priv_pem = priv.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption(),
-    )
-    pub_pem = priv.public_key().public_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo,
-    )
-    return priv_pem, pub_pem
-
-
-def encrypt_private_key_pem(private_pem: bytes, password: str) -> bytes:
-    key = serialization.load_pem_private_key(private_pem, password=None)
-    return key.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        # BestAvailableEncryption chooses the strongest PKCS#8 password-based
-        # encryption scheme the library supports (currently AES-256-CBC + PBKDF2).
-        encryption_algorithm=serialization.BestAvailableEncryption(password.encode("utf-8")),
-    )
-
-
-def decrypt_private_key_pem(encrypted_private_pem: bytes, password: str):
-    return serialization.load_pem_private_key(
-        encrypted_private_pem,
-        password=password.encode("utf-8"),
-    )
-
-
-def load_public_key(pem_or_der: bytes):
-    """
-    Load a public key from either PEM (-----BEGIN PUBLIC KEY-----) or
-    raw DER/SPKI bytes.  The CLI client stores keys as PEM; the web client
-    stores and transmits raw SPKI DER bytes.  Both formats are accepted here
-    so that signature verification works for both clients.
-    """
-    # PEM files are ASCII text starting with '-----'
-    if pem_or_der.lstrip()[:5] == b"-----":
-        return serialization.load_pem_public_key(pem_or_der)
-    # Otherwise treat as raw DER (SPKI)
-    return serialization.load_der_public_key(pem_or_der)
-
-
-# -------------------------
-# File encryption (client)
+# File encryption
 # -------------------------
 def encrypt_bytes_aesgcm(plaintext: bytes, dek: bytes) -> Tuple[bytes, bytes]:
     """
-    Returns (nonce, ciphertext). AES-GCM with 12-byte nonce.
+    Returns (nonce, ciphertext). AES-256-GCM with a fresh 96-bit nonce.
+    File encryption is performed client-side in the browser via WebCrypto;
+    this function exists for server-side utility use only.
     """
     # 96-bit nonce is the GCM standard size; it allows the most efficient
     # internal counter derivation and must never be reused under the same key.
@@ -150,7 +76,24 @@ def decrypt_bytes_aesgcm(nonce: bytes, ciphertext: bytes, dek: bytes) -> bytes:
 # -------------------------
 # Key wrapping (DEK) RSA-OAEP
 # -------------------------
+def load_public_key(pem_or_der: bytes):
+    """
+    Load a public key from either PEM (-----BEGIN PUBLIC KEY-----) or
+    raw DER/SPKI bytes. The web client stores and transmits raw SPKI DER bytes,
+    so both formats are accepted here to ensure signature verification works correctly.
+    """
+    # PEM files are ASCII text starting with '-----'
+    if pem_or_der.lstrip()[:5] == b"-----":
+        return serialization.load_pem_public_key(pem_or_der)
+    # Otherwise treat as raw DER (SPKI)
+    return serialization.load_der_public_key(pem_or_der)
+
+
 def wrap_dek_for_user(dek: bytes, recipient_rsa_public_pem: bytes) -> bytes:
+    """
+    RSA-OAEP encrypt (wrap) the DEK for a recipient using their RSA public key.
+    This is performed client-side in the browser; the server never sees the unwrapped DEK.
+    """
     pub = load_public_key(recipient_rsa_public_pem)
     wrapped = pub.encrypt(
         dek,
@@ -166,6 +109,9 @@ def wrap_dek_for_user(dek: bytes, recipient_rsa_public_pem: bytes) -> bytes:
 
 
 def unwrap_dek_for_user(wrapped_dek: bytes, recipient_rsa_private_key) -> bytes:
+    """
+    RSA-OAEP decrypt (unwrap) a wrapped DEK using the recipient's RSA private key.
+    """
     dek = recipient_rsa_private_key.decrypt(
         wrapped_dek,
         padding.OAEP(
@@ -178,11 +124,12 @@ def unwrap_dek_for_user(wrapped_dek: bytes, recipient_rsa_private_key) -> bytes:
 
 
 # -------------------------
-# Signing (client)
+# Signing (server-side verification)
 # -------------------------
 def make_upload_message(file_id: str, nonce: bytes, ciphertext: bytes, version: int) -> bytes:
     """
-    Canonical byte string that is signed on upload/update/rotate.
+    Canonical byte string that is signed by the web client on upload/update/rotate,
+    and verified by the server.
     Format: b"file_id:<file_id>|version:<version>|nonce:<nonce_hex>|ciphertext_sha256:<hex>"
     Using a structured, human-readable format makes the signed payload auditable.
     """
@@ -196,39 +143,31 @@ def make_upload_message(file_id: str, nonce: bytes, ciphertext: bytes, version: 
     return msg
 
 
-def sign_bytes(data: bytes, ed25519_private_key) -> bytes:
-    return ed25519_private_key.sign(data)
-
-
 def verify_signature(data: bytes, signature: bytes, public_key_bytes: bytes) -> bool:
     """
-    Verify a signature over `data`.  Supports both:
-      - Ed25519  (used by the Python CLI client)
-      - ECDSA P-256 / SHA-256  (used by the browser/web client via WebCrypto)
-    The key type is detected automatically from the loaded public key object.
+    Verify an ECDSA P-256 / SHA-256 signature produced by the browser's WebCrypto API.
+
+    WebCrypto produces ECDSA signatures in IEEE P1363 format: a raw 64-byte
+    concatenation of the r and s integers. Python's cryptography library expects
+    DER/ASN.1 encoding. P1363 is detected by checking that the signature length
+    matches 2 * coord_size (64 bytes for P-256) and does not start with 0x30
+    (the DER SEQUENCE tag). When detected, r and s are extracted and re-encoded
+    as a DER SEQUENCE before verification.
     """
     try:
         pub = load_public_key(public_key_bytes)
-        if isinstance(pub, ed25519.Ed25519PublicKey):
-            # Ed25519: verify(signature, data) — no hash algorithm argument
-            pub.verify(signature, data)
-        elif isinstance(pub, ec.EllipticCurvePublicKey):
-            # WebCrypto (browser) produces ECDSA signatures in IEEE P1363 format:
-            # raw r || s concatenation (64 bytes for P-256).
-            # Python's cryptography library expects DER/ASN.1 format.
-            # Detect P1363 by checking if the signature length matches the curve
-            # coordinate size (32 bytes each for P-256 = 64 bytes total).
-            # DER signatures start with 0x30 (SEQUENCE tag) and are variable length.
-            coord_size = (pub.key_size + 7) // 8  # e.g. 32 for P-256
-            if len(signature) == 2 * coord_size and signature[0] != 0x30:
-                # Convert P1363 (r || s) → DER SEQUENCE { INTEGER r, INTEGER s }
-                r = int.from_bytes(signature[:coord_size], "big")
-                s = int.from_bytes(signature[coord_size:], "big")
-                signature = encode_dss_signature(r, s)
-            # ECDSA: requires explicit hash algorithm
-            pub.verify(signature, data, ECDSA(hashes.SHA256()))
-        else:
+        if not isinstance(pub, ec.EllipticCurvePublicKey):
             return False
+
+        coord_size = (pub.key_size + 7) // 8  # e.g. 32 bytes for P-256
+        if len(signature) == 2 * coord_size and signature[0] != 0x30:
+            # Convert IEEE P1363 (r || s) -> DER SEQUENCE { INTEGER r, INTEGER s }
+            r = int.from_bytes(signature[:coord_size], "big")
+            s = int.from_bytes(signature[coord_size:], "big")
+            signature = encode_dss_signature(r, s)
+
+        # ECDSA requires an explicit hash algorithm argument
+        pub.verify(signature, data, ECDSA(hashes.SHA256()))
         return True
     except Exception:
         return False

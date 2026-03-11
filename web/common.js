@@ -88,11 +88,11 @@ function b64ToBuf(b64) {
 
 // ---- DEBUG: show any JS errors on screen ----
 window.addEventListener("error", (e) => {
-  try { log(`❌ JS Error: ${e.message} @ ${e.filename}:${e.lineno}`); } catch {}
+  try { log(`JS Error: ${e.message} @ ${e.filename}:${e.lineno}`); } catch {}
 });
 
 window.addEventListener("unhandledrejection", (e) => {
-  try { log(`❌ Promise Error: ${e.reason?.message || e.reason}`); } catch {}
+  try { log(`Promise Error: ${e.reason?.message || e.reason}`); } catch {}
 });
 
 console.log("[ACrypt] common.js loaded");

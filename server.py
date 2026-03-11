@@ -184,7 +184,7 @@ def user_pubkeys(username: str):
 @APP.post("/upload")
 def upload():
     """
-    Client uploads ciphertext + nonce + wrapped_dek_for_owner + Ed25519 signature.
+    Web client uploads ciphertext + nonce + wrapped_dek_for_owner + ECDSA P-256 signature.
     Server verifies the signature using the uploader's registered signing public key,
     then stores ciphertext and the signature for future download verification.
     """
@@ -315,7 +315,7 @@ def update():
     Any user with access (not just owner) can upload a new ciphertext for a file.
     The client re-encrypts the modified plaintext with the *same* DEK they already
     hold via their wrapped_dek entry.  A fresh nonce must be provided.
-    The client must also provide an Ed25519 signature over the canonical upload message.
+    The client must also provide an ECDSA P-256 signature over the canonical upload message.
     Wrapped DEK entries for all authorised users remain unchanged (DEK is not rotated).
     Use /rotate if you want a full key rotation (owner-only).
     """
@@ -497,7 +497,7 @@ def delete_file(file_id: str):
 def rotate():
     """
     Owner uploads a new ciphertext+nonce and a full new set of wrapped keys for allowed users.
-    An Ed25519 signature over the new ciphertext is required and stored.
+    An ECDSA P-256 signature over the new ciphertext is required and stored.
     This gives strong revocation (re-key + re-encrypt).
     """
     user = require_user()
@@ -601,7 +601,7 @@ if __name__ == "__main__":
             raise SystemExit(1)
 
         deleted = clear_all_server_state()
-        print(f"Cleared database tables and deleted {deleted} ciphertext file(s) in {FILES_DIR}")
+        print(f"✅ Cleared database tables and deleted {deleted} ciphertext file(s) in {FILES_DIR}")
         raise SystemExit(0)
 
     # Normal mode: run server
