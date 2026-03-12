@@ -569,7 +569,7 @@ async function grantFlow() {
     return;
   }
 
-  setStatus("ownerStatus", `Granted user "${recipient}" access to ${fileId}.`);
+  setStatus("ownerStatus", `Granted user '${recipient}' access to ${fileId}.`);
   log(`Grant complete: ${recipient} -> ${fileId}`);
 }
 
@@ -613,10 +613,17 @@ Note: for strong revocation (preventing use of a previously-downloaded key) use 
     return;
   }
 
+  // Re-authenticate before executing the destructive action
+  const password = await askPassword("Confirm your password to revoke access:");
+  if (!password) {
+    setStatus("ownerStatus", "Revoke cancelled — no password provided.");
+    return;
+  }
+
   try {
     await api("/revoke", {
       method: "POST",
-      body: JSON.stringify({ file_id: fileId, recipient })
+      body: JSON.stringify({ file_id: fileId, recipient, password })
     });
   } catch (e) {
     setStatus("ownerStatus", `Revoke failed: ${e.message}`);
@@ -831,7 +838,8 @@ async function rotateFlow() {
       nonce_b64: enc.ivB64,
       ciphertext_b64: enc.ctB64,
       sig_b64: sigB64,
-      wrapped_map
+      wrapped_map,
+      password,
     })
   });
 
@@ -843,22 +851,6 @@ async function rotateFlow() {
 
   log(`Rotated ${fileId} -> version ${rr.version}`);
   await refreshList();
-}
-
-function resetLocalKeysFlow() {
-  const u = getUsername();
-  if (!u) return;
-
-  const ok1 = confirm("This will delete your locally stored keys for this username in THIS browser only. Continue?");
-  if (!ok1) return;
-
-  localStorage.removeItem(LS.rsaPub(u));
-  localStorage.removeItem(LS.rsaPriv(u));
-  localStorage.removeItem(LS.signPub(u));
-  localStorage.removeItem(LS.signPriv(u));
-
-  log(`Local keys cleared for ${u} on this browser.`);
-  alert("Local keys cleared. Now go to Register and create the account again (or register with the same username after server clear).");
 }
 
 
@@ -878,11 +870,21 @@ async function deleteFlow(fileId) {
   );
   if (!confirmed) return;
 
+  // Re-authenticate before executing the destructive action
+  const password = await askPassword("Confirm your password to delete this file:");
+  if (!password) {
+    setStatus("ownerStatus", "Delete cancelled — no password provided.");
+    return;
+  }
+
   setStatus("ownerStatus", "Deleting…");
   log(`Deleting file ${id}…`);
 
   try {
-    await api(`/delete/${id}`, { method: "DELETE" });
+    await api(`/delete/${id}`, {
+      method: "DELETE",
+      body: JSON.stringify({ password }),
+    });
     setStatus("ownerStatus", `File ${id} deleted.`);
     log(`Deleted file ${id}`);
     const inp = document.getElementById("deleteFileId");
@@ -896,6 +898,19 @@ async function deleteFlow(fileId) {
 
 window.addEventListener("DOMContentLoaded", async () => {
   if (!requireAuthOrRedirect()) return;
+
+  // Verify the session token is still valid on the server before rendering.
+  // This catches expired tokens or tokens that were invalidated server-side
+  // (e.g. after a server restart clearing the sessions table).
+  try {
+    await api("/verify");
+  } catch (e) {
+    log("Session invalid or expired — redirecting to login.");
+    localStorage.removeItem(LS.token);
+    localStorage.removeItem(LS.username);
+    location.href = "/login";
+    return;
+  }
 
   initServerUrlUI();
   log("Dashboard ready: event listeners attaching");
@@ -928,7 +943,5 @@ window.addEventListener("DOMContentLoaded", async () => {
       location.href = "/login";
     });
   }
-  bind("resetLocalKeysBtn", "click", () => resetLocalKeysFlow());
-
   await refreshList();
 });

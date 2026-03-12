@@ -38,6 +38,19 @@
       <div class="muted" id="status" style="margin-top:12px;text-align:center"></div>
 
       <div class="auth-footer">Don't have an account? <a href="/register">Register</a></div>
+
+      <!-- Key import section — for restoring access on a new browser/device -->
+      <hr class="divider" style="margin-top:28px" />
+      <p style="font-size:13px;color:#6B7A99;margin:4px 0 10px">
+        <strong>New browser or device?</strong> Import your key backup to restore access.
+      </p>
+      <label for="keyImportFile" style="
+        display:inline-block;cursor:pointer;padding:6px 14px;
+        border:1px solid var(--border,#D0D8E8);border-radius:6px;font-size:13px;
+        color:#6B7A99;background:var(--surface,#fff);
+      ">Import key backup (.json)</label>
+      <input id="keyImportFile" type="file" accept=".json" style="display:none" />
+      <div id="importStatus" style="margin-top:8px;font-size:13px;color:#6B7A99;"></div>
     </div>
   </div>
   <pre id="logBox" style="display:none"></pre>
@@ -48,6 +61,7 @@
     window.addEventListener("DOMContentLoaded", () => {
       initServerUrlUI();
       if (getToken() && getUsername()) { location.href = "/dashboard"; return; }
+
       document.getElementById("loginBtn").addEventListener("click", async () => {
         try {
           setStatus("status", "Signing in…");
@@ -56,11 +70,30 @@
           location.href = "/dashboard";
         } catch (e) {
           log(`Login error: ${e.message}`);
-          setStatus("status", `${e.message}`);
+          setStatus("status", e.message);
         }
       });
+
       document.getElementById("logPass").addEventListener("keydown", e => {
         if (e.key === "Enter") document.getElementById("loginBtn").click();
+      });
+
+      // Key import — restore localStorage keys from a backup file,
+      // then auto-fill the username field so the user just needs their password
+      document.getElementById("keyImportFile").addEventListener("change", async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        try {
+          const text = await file.text();
+          const username = importKeyBundle(text);
+          document.getElementById("logUser").value = username;
+          document.getElementById("logPass").focus();
+          document.getElementById("importStatus").textContent =
+            `Keys restored for "${username}". Enter your password and sign in.`;
+        } catch (err) {
+          document.getElementById("importStatus").textContent = err.message;
+        }
+        e.target.value = "";
       });
     });
   </script>

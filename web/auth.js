@@ -111,10 +111,22 @@ async function loginFlow() {
   const password = document.getElementById("logPass").value;
   if (!username || !password) throw new Error("Enter username + password.");
 
-  // ensureLocalKeys generates new keypairs if none exist in localStorage for this
-  // username. On a device the user already registered from, the existing keys are
-  // reused and only the server authentication call is made below.
-  await ensureLocalKeys(username, password);
+  // Keys must already exist in localStorage from a prior registration or key import.
+  // If they are missing, the user is on a new browser/device and must import their
+  // key backup file before logging in — we do NOT generate new keys here because
+  // that would produce a keypair mismatched with the public keys on the server,
+  // making it impossible to decrypt files or verify signatures.
+  const hasRsa  = localStorage.getItem(LS.rsaPub(username)) &&
+                  localStorage.getItem(LS.rsaPriv(username));
+  const hasSign = localStorage.getItem(LS.signPub(username)) &&
+                  localStorage.getItem(LS.signPriv(username));
+
+  if (!hasRsa || !hasSign) {
+    throw new Error(
+      "No local keys found for this account. " +
+      "Import your key backup file below, then try again."
+    );
+  }
 
   const j = await api("/login", {
     method: "POST",
@@ -124,4 +136,58 @@ async function loginFlow() {
   localStorage.setItem(LS.token, j.token);
   localStorage.setItem(LS.username, username);
   log(`Logged in as ${username}`);
+}
+
+// ── Key bundle export / import ────────────────────────────────────────────────
+
+/**
+ * Build a portable key backup object from localStorage.
+ * Contains the four encrypted key entries for the given username.
+ * The private keys inside are AES-GCM encrypted with the user's password,
+ * so this file is safe to store anywhere — useless without the password.
+ */
+function exportKeyBundle(username) {
+  return {
+    version: 1,
+    username,
+    rsa_pub:   localStorage.getItem(LS.rsaPub(username)),
+    rsa_priv:  localStorage.getItem(LS.rsaPriv(username)),
+    sign_pub:  localStorage.getItem(LS.signPub(username)),
+    sign_priv: localStorage.getItem(LS.signPriv(username)),
+  };
+}
+
+/**
+ * Trigger a browser download of the key bundle as a JSON file.
+ */
+function downloadKeyBundle(username) {
+  const bundle = exportKeyBundle(username);
+  const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement("a");
+  a.href     = url;
+  a.download = `acrypt-keys-${username}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * Restore keys from a JSON key bundle back into localStorage.
+ * Call this before loginFlow() on a new browser/device.
+ * Returns the username stored in the bundle.
+ */
+function importKeyBundle(jsonText) {
+  const bundle = JSON.parse(jsonText);
+  if (!bundle.username || !bundle.rsa_pub || !bundle.rsa_priv ||
+      !bundle.sign_pub  || !bundle.sign_priv) {
+    throw new Error("Invalid key backup file — missing required fields.");
+  }
+  const u = bundle.username;
+  localStorage.setItem(LS.rsaPub(u),   bundle.rsa_pub);
+  localStorage.setItem(LS.rsaPriv(u),  bundle.rsa_priv);
+  localStorage.setItem(LS.signPub(u),  bundle.sign_pub);
+  localStorage.setItem(LS.signPriv(u), bundle.sign_priv);
+  return u;
 }

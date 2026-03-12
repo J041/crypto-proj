@@ -435,6 +435,8 @@ def revoke():
     NOTE: For real revocation, owner should rotate the file key (implemented via /rotate).
     """
     user = require_user()
+    if not require_password(user):
+        return jsonify({"error": "password required for revoke"}), 401
     data = request.json or {}
     file_id = data.get("file_id") or ""
     recipient = (data.get("recipient") or "").strip()
@@ -462,6 +464,8 @@ def delete_file(file_id: str):
     the files and file_keys tables (cascade-style, in FK-safe order).
     """
     user = require_user()
+    if not require_password(user):
+        return jsonify({"error": "password required for delete"}), 401
 
     with db() as conn:
         f = conn.execute(
@@ -501,6 +505,8 @@ def rotate():
     This gives strong revocation (re-key + re-encrypt).
     """
     user = require_user()
+    if not require_password(user):
+        return jsonify({"error": "password required for rotate"}), 401
     data = request.json or {}
     file_id = data.get("file_id") or ""
     nonce_b64 = data.get("nonce_b64") or ""
@@ -555,6 +561,42 @@ def rotate():
         conn.commit()
 
     return jsonify({"ok": True, "version": new_version})
+
+
+@APP.get("/verify")
+def verify_token():
+    """
+    Lightweight token validation endpoint.
+    Returns 200 + username if the Bearer token is valid and unexpired.
+    Returns 401 if missing, invalid, or expired.
+    The browser calls this on dashboard load to confirm the session is still live
+    before rendering the UI, rather than trusting whatever is in localStorage.
+    """
+    u = get_auth_user()
+    if not u:
+        return jsonify({"error": "invalid or expired token"}), 401
+    return jsonify({"ok": True, "username": u})
+
+
+def require_password(username: str) -> bool:
+    """
+    Helper used by destructive endpoints (delete, revoke, rotate).
+    Expects a 'password' field in the JSON request body and verifies it
+    against the stored PBKDF2 hash for the given username.
+    Returns True if the password is correct, False otherwise.
+    """
+    data = request.json or {}
+    password = data.get("password") or ""
+    if not password:
+        return False
+    with db() as conn:
+        row = conn.execute(
+            "SELECT pw_salt, pw_hash FROM users WHERE username=?", (username,)
+        ).fetchone()
+    if not row:
+        return False
+    return verify_password(password, bytes(row["pw_salt"]), bytes(row["pw_hash"]))
+
 
 def clear_all_server_state():
     """
