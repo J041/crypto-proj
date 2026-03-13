@@ -25,7 +25,7 @@ def hash_password(password: str, salt: bytes | None = None) -> Tuple[bytes, byte
         algorithm=hashes.SHA256(),
         length=32,           # 256-bit output key
         salt=salt,
-        iterations=200_000,  # NIST-recommended minimum as of 2023; slows brute-force attacks
+        iterations=600_000,  # 
     )
     pw_hash = kdf.derive(password.encode("utf-8"))
     return salt, pw_hash
@@ -36,7 +36,7 @@ def verify_password(password: str, salt: bytes, pw_hash: bytes) -> bool:
         algorithm=hashes.SHA256(),
         length=32,
         salt=salt,
-        iterations=200_000,
+        iterations=600_000,
     )
     try:
         # kdf.verify() does a constant-time comparison internally, which prevents

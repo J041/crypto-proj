@@ -28,7 +28,7 @@ async function decryptLocalPrivateKey(packed, password) {
   const enc = new TextEncoder();
   const baseKey = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveKey"]);
   const key = await crypto.subtle.deriveKey(
-    { name: "PBKDF2", salt, iterations: 200000, hash: "SHA-256" },
+    { name: "PBKDF2", salt, iterations: 600000, hash: "SHA-256" },
     baseKey,
     { name: "AES-GCM", length: 256 },
     false,

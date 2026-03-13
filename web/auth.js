@@ -10,7 +10,7 @@ async function deriveKeyFromPassword(password, saltBytes) {
     ["deriveKey"]
   );
   return crypto.subtle.deriveKey(
-    { name: "PBKDF2", salt: saltBytes, iterations: 200000, hash: "SHA-256" },
+    { name: "PBKDF2", salt: saltBytes, iterations: 600000, hash: "SHA-256" },
     baseKey,
     { name: "AES-GCM", length: 256 },
     false,        // non-extractable: the derived AES key stays inside WebCrypto
