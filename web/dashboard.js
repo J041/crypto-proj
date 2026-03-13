@@ -128,7 +128,7 @@ async function aesGcmDecrypt(ivB64, ctB64, dekBytes) {
 // -------------------------
 
 /**
- * Canonical message signed on every ciphertext upload/update/rotate.
+ * Canonical message signed on every ciphertext upload/update.
  * Must mirror make_upload_message() in crypto_utils.py (server-side verification
  * uses Ed25519 for the CLI client; the web client uses ECDSA P-256 — both follow
  * the same message format so the structure is auditable and consistent).
@@ -231,9 +231,9 @@ async function refreshList() {
   for (const f of files) {
     const isOwner = (f.owner === me);
     const tr = document.createElement("tr");
-    // last_modified_by is the signer of the most recent upload/update/rotate.
+    // last_modified_by is the signer of the most recent upload/update.
     // It equals the owner on initial upload, and changes when any authorised
-    // user calls modify (update) or the owner calls rotate.
+    // user calls modify (update).
     const lastMod = f.last_modified_by || f.owner;
     const modifiedByOther = (lastMod !== f.owner);
     const modCell = modifiedByOther
@@ -294,7 +294,7 @@ function populateFileSelects(files) {
   const selects = {
     modifyFileId: files,               // any accessible file can be modified
     grantFileId:  files.filter(f => f.owner === me),  // only owner can grant
-    revokeFileId: files.filter(f => f.owner === me),  // only owner can revoke/rotate
+    revokeFileId: files.filter(f => f.owner === me),  // only owner can revoke
   };
 
   for (const [id, list] of Object.entries(selects)) {
@@ -419,7 +419,7 @@ async function downloadFlow(fileId) {
     j = await api(`/download/${fileId}`);
   } catch (e) {
     if ((e.message || "").toLowerCase().includes("no access")) {
-      alert("You no longer have access to this file. The owner may have rotated the encryption keys.");
+      alert("You no longer have access to this file.");
       log(`Download blocked: no access (possibly revoked) for file ${fileId}`);
       return;
     }
@@ -464,7 +464,7 @@ async function downloadFlow(fileId) {
   try {
     pt = await aesGcmDecrypt(j.nonce_b64, j.ciphertext_b64, dek);
   } catch (e) {
-    alert("Could not decrypt the file content. The file may have been rotated and you don't have the new key.");
+    alert("Could not decrypt the file content.");
     log(`Decrypt failed for ${fileId}: ${e.message}`);
     return;
   }
@@ -574,37 +574,40 @@ async function grantFlow() {
 }
 
 async function revokeFlow() {
-  // Optional chaining (?.) is used throughout: if a UI element is missing (e.g.
-  // the page was loaded without the full dashboard HTML), the value falls back to
-  // "" gracefully rather than throwing a TypeError.
-  const fileId = (document.getElementById("revokeFileId")?.value || "").trim();
+  const fileId    = (document.getElementById("revokeFileId")?.value || "").trim();
   const recipient = (document.getElementById("revokeRecipient")?.value || "").trim();
   if (!fileId || !recipient) {
-    setStatus("ownerStatus", "Enter file_id + recipient.");
+    setStatus("ownerStatus", "Enter file ID + recipient.");
     return;
   }
 
-  // Fetch current access list so the confirm prompt shows who currently has access.
+  const username = getUsername();
+
+  // Fetch current access list to build the post-revoke allowed set
   let currentUsers = [];
   try {
     const a = await api(`/allowed/${fileId}`);
     currentUsers = Array.isArray(a.allowed) ? a.allowed : [];
   } catch (e) {
-    // Non-fatal — proceed without showing the current list
+    setStatus("ownerStatus", `Could not fetch access list: ${e.message}`);
+    return;
   }
 
-  const otherUsers = currentUsers.filter(u => u !== recipient);
+  if (!currentUsers.includes(recipient)) {
+    setStatus("ownerStatus", `${recipient} does not have access to this file.`);
+    return;
+  }
+
+  // The remaining users after revocation (owner always stays)
+  const remainingUsers = currentUsers.filter(u => u !== recipient);
+
   const currentListText = currentUsers.length
     ? `Currently has access: ${currentUsers.join(", ")}.`
     : "";
 
   const confirmed = await askConfirm(
     `Revoke access for ${recipient}?`,
-    `${currentListText}
-
-This will remove ${recipient}'s access to this file. They will no longer be able to download or modify it.
-
-Note: for strong revocation (preventing use of a previously-downloaded key) use Rotate Key instead.`,
+    `${currentListText}\n\nThis will re-encrypt the file with a new key. ${recipient} will permanently lose the ability to decrypt it, even if they previously downloaded it.`,
     "Revoke",
     true
   );
@@ -613,37 +616,90 @@ Note: for strong revocation (preventing use of a previously-downloaded key) use 
     return;
   }
 
-  // Re-authenticate before executing the destructive action
-  const password = await askPassword("Confirm your password to revoke access:");
+  const password = await askPassword("Enter your password to re-encrypt and revoke:");
   if (!password) {
     setStatus("ownerStatus", "Revoke cancelled — no password provided.");
     return;
   }
 
+  setStatus("ownerStatus", "Revoking (re-encrypting file)…");
+
+  let priv, signPrivKey;
   try {
-    await api("/revoke", {
-      method: "POST",
-      body: JSON.stringify({ file_id: fileId, recipient, password })
-    });
+    priv         = await loadLocalPrivateKey(username, password);
+    signPrivKey  = await loadLocalSignPrivateKey(username, password);
   } catch (e) {
-    setStatus("ownerStatus", `Revoke failed: ${e.message}`);
+    setStatus("ownerStatus", `Could not load local keys: ${e.message}`);
     return;
   }
 
-  log(`Revoked access: ${recipient} -> ${fileId}`);
-
-  // Fetch the updated access list and show it inline.
-  let updatedUsers = [];
+  // Download current ciphertext and decrypt with old DEK
+  let j;
   try {
-    const a = await api(`/allowed/${fileId}`);
-    updatedUsers = Array.isArray(a.allowed) ? a.allowed : [];
+    j = await api(`/download/${fileId}`);
   } catch (e) {
-    // Non-fatal
+    setStatus("ownerStatus", `Could not fetch file: ${e.message}`);
+    return;
   }
 
-  setStatus("ownerStatus", `${recipient}'s access has been revoked.`);
+  let plaintext;
+  try {
+    const oldDek = await rsaUnwrap(j.wrapped_dek_b64, priv);
+    plaintext    = await aesGcmDecrypt(j.nonce_b64, j.ciphertext_b64, oldDek);
+  } catch (e) {
+    setStatus("ownerStatus", `Could not decrypt file: ${e.message}`);
+    return;
+  }
+
+  // Re-encrypt with a fresh DEK
+  const newDek = crypto.getRandomValues(new Uint8Array(32));
+  const enc    = await aesGcmEncrypt(plaintext, newDek);
+
+  // Wrap the new DEK for every remaining user (excludes revoked recipient)
+  const wrapped_map = {};
+  for (const u of remainingUsers) {
+    try {
+      const pubObj = await api(`/user_pubkeys/${u}`);
+      const pub    = await importSpkiPublicKeyFromServer(pubObj.rsa_pub_pem_b64);
+      wrapped_map[u] = await rsaWrap(newDek, pub);
+    } catch (e) {
+      setStatus("ownerStatus", `Could not wrap key for ${u}: ${e.message}`);
+      return;
+    }
+  }
+
+  // Sign the new ciphertext
+  const newVersion = j.version + 1;
+  const msgBytes   = await makeUploadMessage(fileId, enc.ivB64, enc.ctB64, newVersion);
+  const sigB64     = await ecdsaSign(msgBytes, signPrivKey);
+
+  // Post rotation to server
+  try {
+    await api("/rotate", {
+      method: "POST",
+      body: JSON.stringify({
+        file_id:        fileId,
+        nonce_b64:      enc.ivB64,
+        ciphertext_b64: enc.ctB64,
+        sig_b64:        sigB64,
+        wrapped_map,
+        password,
+      })
+    });
+  } catch (e) {
+    setStatus("ownerStatus", `Rotate failed: ${e.message}`);
+    return;
+  }
+
+  log(`Revoked ${recipient} from ${fileId} via key rotation (v${newVersion})`);
+  setStatus("ownerStatus", `${recipient}'s access has been permanently revoked.`);
+
+  // Show updated access list
+  const updatedUsers = remainingUsers;
   showAccessList(fileId, updatedUsers, recipient);
+  await refreshList();
 }
+
 
 /**
  * Render a tidy "Users with access" panel inside #accessList.
@@ -762,98 +818,6 @@ async function modifyFlow() {
 }
 
 
-async function rotateFlow() {
-  // Clear any stale access-list panel from a previous revoke
-  const _al = document.getElementById('accessList'); if (_al) _al.innerHTML = '';
-  const username = getUsername();
-  const password = await askPassword("Enter your password to decrypt & re-encrypt:");
-  if (!password) return;
-
-  // rotateFileId shares the revokeFileId input in the redesigned layout
-  const fileId = (document.getElementById("rotateFileId")?.value ||
-                  document.getElementById("revokeFileId")?.value || "").trim();
-  const allowed = (document.getElementById("rotateAllowed")?.value || "").trim();
-  if (!fileId || !allowed) {
-    setStatus("ownerStatus", "Enter file_id + allowed users.");
-    return;
-  }
-
-  // Split on any whitespace (spaces, tabs, newlines) so users can paste a
-  // space- or newline-separated list. filter(Boolean) removes empty tokens.
-  const allowedUsers = allowed.split(/\s+/).filter(Boolean);
-
-  // Fetch the current allowed users BEFORE rotation to compute who will be revoked
-  let oldAllowed = [];
-  try {
-    const a = await api(`/allowed/${fileId}`);
-    oldAllowed = Array.isArray(a.allowed) ? a.allowed : [];
-  } catch (e) {
-    setStatus("ownerStatus", `Could not fetch current allowed users: ${e.message}`);
-    return;
-  }
-
-  const revokedUsers = oldAllowed.filter((u) => !allowedUsers.includes(u));
-
-  // Confirm BEFORE doing anything irreversible
-  if (revokedUsers.length > 0) {
-    const ok = confirm(
-      `You are about to revoke access for: ${revokedUsers.join(", ")}.\n\n` +
-      "They will no longer be able to decrypt or download this file after rotation.\n\n" +
-      "Continue?"
-    );
-    if (!ok) return;
-  }
-
-  const priv = await loadLocalPrivateKey(username, password);
-
-  const j = await api(`/download/${fileId}`);
-  const oldDek = await rsaUnwrap(j.wrapped_dek_b64, priv);
-  const pt = await aesGcmDecrypt(j.nonce_b64, j.ciphertext_b64, oldDek);
-
-  const newDek = crypto.getRandomValues(new Uint8Array(32));
-  const enc = await aesGcmEncrypt(pt, newDek);
-
-  const wrapped_map = {};
-  for (const u of allowedUsers) {
-    const pubObj = await api(`/user_pubkeys/${u}`);
-    const pub = await importSpkiPublicKeyFromServer(pubObj.rsa_pub_pem_b64);
-    wrapped_map[u] = await rsaWrap(newDek, pub);
-  }
-
-  const newVersion = j.version + 1;
-  let signPrivKey;
-  try {
-    signPrivKey = await loadLocalSignPrivateKey(username, password);
-  } catch (e) {
-    setStatus("ownerStatus", `Could not load signing key: ${e.message}`);
-    return;
-  }
-  const msgBytes = await makeUploadMessage(fileId, enc.ivB64, enc.ctB64, newVersion);
-  const sigB64 = await ecdsaSign(msgBytes, signPrivKey);
-
-  const rr = await api("/rotate", {
-    method: "POST",
-    body: JSON.stringify({
-      file_id: fileId,
-      nonce_b64: enc.ivB64,
-      ciphertext_b64: enc.ctB64,
-      sig_b64: sigB64,
-      wrapped_map,
-      password,
-    })
-  });
-
-  if (revokedUsers.length > 0) {
-    setStatus("ownerStatus", `Access revoked for ${revokedUsers.join(", ")}. Rotated key. New version=${rr.version}`);
-  } else {
-    setStatus("ownerStatus", `Rotated key. New version=${rr.version}`);
-  }
-
-  log(`Rotated ${fileId} -> version ${rr.version}`);
-  await refreshList();
-}
-
-
 async function deleteFlow(fileId) {
   // fileId can be passed directly (from table button) or read from the input field
   const id = fileId || (document.getElementById("deleteFileId")?.value || "").trim();
@@ -924,7 +888,6 @@ window.addEventListener("DOMContentLoaded", async () => {
   bind("uploadBtn",         "click", () => { log("Upload button clicked"); uploadFlow(); });
   bind("grantBtn",          "click", () => grantFlow());
   bind("revokeBtn",         "click", () => revokeFlow());
-  bind("rotateBtn",         "click", () => rotateFlow());
   bind("deleteBtn",         "click", () => deleteFlow());
   // Logout is handled by #navLogout injected by navbar.js;
   // bind() here covers any page that still has a static #logoutBtn.

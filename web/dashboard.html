@@ -102,7 +102,7 @@
           <div class="card-icon purple">🛡</div>
           <div>
             <div class="card-title">Owner Actions</div>
-            <div class="card-subtitle">Grant, revoke, rotate keys, or permanently delete files you own</div>
+            <div class="card-subtitle">Grant or revoke access (with key rotation), or permanently delete files you own</div>
           </div>
         </div>
 
@@ -111,6 +111,7 @@
           <!-- Grant -->
           <div>
             <h3>Grant Access</h3>
+            <p class="muted" style="font-size:12px;margin:0 0 10px">Gives the specified user access to the selected file.</p>
             <div class="field">
               <label>File ID</label>
               <select id="grantFileId"><option value="">— select a file you own —</option></select>
@@ -119,27 +120,23 @@
               <label>Recipient username</label>
               <input id="grantRecipient" placeholder="bob" />
             </div>
-            <button id="grantBtn" type="button" class="success btn-sm">✔ Grant Access</button>
+            <button id="grantBtn" type="button" class="success btn-sm">Grant Access</button>
           </div>
 
           <!-- Revoke -->
           <div>
             <h3>Revoke Access</h3>
+            <p class="muted" style="font-size:12px;margin:0 0 10px">Re-encrypts the file with a new key. The revoked user permanently loses access.</p>
             <div class="field">
               <label>File ID</label>
               <select id="revokeFileId"><option value="">— select a file you own —</option></select>
             </div>
             <div class="field">
-              <label>Recipient username</label>
+              <label>Revoked username</label>
               <input id="revokeRecipient" placeholder="bob" />
             </div>
             <div class="btn-row" style="margin-top:0">
-              <button id="revokeBtn" type="button" class="secondary btn-sm">✖ Soft Revoke</button>
-              <button id="rotateBtn" type="button" class="danger btn-sm" style="flex:1">🔄 Strong Revoke (Rotate Key)</button>
-            </div>
-            <div class="field" style="margin-top:10px">
-              <label>Kept users after rotation (space-separated, include yourself!)</label>
-              <input id="rotateAllowed" placeholder="alice" />
+              <button id="revokeBtn" type="button" class="secondary btn-sm">Revoke Access</button>
             </div>
           </div>
         </div>
